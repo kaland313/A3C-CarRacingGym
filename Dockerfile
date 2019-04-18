@@ -5,12 +5,17 @@ MAINTAINER kaland
 
 RUN apt update --fix-missing
 RUN apt install -y libopenmpi-dev ssh sudo nano gcc cmake git
+RUN apt install -y build-essential freeglut3 freeglut3-dev libxi-dev libxmu-dev zlib1g-dev
 RUN apt install -y xvfb python3-tk python-opengl
 
 RUN pip3 install --upgrade pip
-RUN pip3 install mpi4py pympler
+RUN pip3 install mpi4py pympler cma
+RUN pip3 install gym 
+RUN pip3 install gym[box2d]
+RUN pip3 install gym[atari]
+RUN pip3 install scikit-image
+RUN pip3 install matplotlib
 RUN pip3 install jupyterlab
-RUN pip3 install gym
 
 COPY ./DockerSetup/jupyter_notebook_config.py /root/.jupyter/jupyter_notebook_config.py
 COPY ./Scripts /tf/UserScripts

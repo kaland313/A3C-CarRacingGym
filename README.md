@@ -22,7 +22,7 @@ In the GitHub repo root folder (A3C-CarRacingGym) run:
 # Running script
 To the bash shell of the container enter:
 
-`cd UserScripts`
+`cd UserScripts/CartPole`
 
 `xvfb-run -s "-screen 0 640x480x24" python a3c_cartpole.py --train`
 
@@ -32,4 +32,5 @@ It's not very meaningful to run a test of the trained model, because the graphic
 
 # Copyright notice
 The a3c_cartpole.py source code is based on the Medium post [Deep Reinforcement Learning: Playing CartPole through Asynchronous Advantage Actor Critic (A3C) with tf.keras and eager execution](https://medium.com/tensorflow/deep-reinforcement-learning-playing-cartpole-through-asynchronous-advantage-actor-critic-a3c-7eab2eea5296)
+
 In the Dockerfile I used some elemetns from https://github.com/ffabi/SemesterProject
