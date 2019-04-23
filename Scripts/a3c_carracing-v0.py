@@ -1,5 +1,16 @@
 import os
 
+# Call XInitThreads as the _very_ first thing.
+# After some Qt import, it's too late
+import ctypes
+import sys
+if sys.platform.startswith('linux'):
+    try:
+        x11 = ctypes.cdll.LoadLibrary('libX11.so')
+        x11.XInitThreads()
+    except:
+        print("Warning: failed to XInitThreads()")
+
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import threading
@@ -9,10 +20,20 @@ import numpy as np
 from queue import Queue
 import argparse
 import matplotlib.pyplot as plt
+from skimage.color import rgb2gray
 
 import tensorflow as tf
 from tensorflow.python import keras
 from tensorflow.python.keras import layers
+
+
+ACTION_ACCEL = [0, 1, 0]
+ACTION_BRAKE = [0, 0, 0.8]
+ACTION_LEFT  = [-1, 0, 0]
+ACTION_RIGHT = [1, 0, 0]
+ACTIONS      = [ACTION_ACCEL, ACTION_LEFT, ACTION_RIGHT, ACTION_BRAKE]
+ACTION_SIZE  = len(ACTIONS)
+
 
 tf.enable_eager_execution()
 
@@ -42,7 +63,7 @@ args = parser.parse_args()
 # Helper functions
 #############################################################
 
-def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps):
+def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps):
     """Helper function to store score and print statistics.
 
     :param episode: Current episode
@@ -52,6 +73,7 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
     :param result_queue: Queue storing the moving average of the scores
     :param total_loss: The total loss accumualted over the current episode
     :param num_steps: The number of steps the episode took to complete
+    :param global_steps: The total number of steps taken by all workers
     """
     if global_ep_reward == 0:
         global_ep_reward = episode_reward
@@ -63,7 +85,8 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
         'Episode Reward: ' +str(int(episode_reward)) + ' | ' +
         'Loss: ' + str(int(total_loss / float(num_steps) * 1000) / 1000) + ' | ' +
         'Steps: ' + str(num_steps) + ' | ' +
-        'Worker: ' + str(worker_idx)
+        'Worker: ' + str(worker_idx) + ' | ' +
+        'Global steps: ' + str(global_steps)
     )
     result_queue.put(global_ep_reward)
     return global_ep_reward
@@ -119,17 +142,19 @@ class ActorCriticModel(keras.Model):
         super(ActorCriticModel, self).__init__()
         self.state_size = state_size
         self.action_size = action_size
-        self.dense1 = layers.Dense(100, activation='relu')
+        self.conv1 = layers.Conv2D(16, 8, strides=4, data_format="channels_last")
+        self.conv2 = layers.Conv2D(32, 3, strides=2, data_format="channels_last")
+        self.flatten = layers.Flatten()
         self.policy_logits = layers.Dense(action_size)
-        self.dense2 = layers.Dense(100, activation='relu')
         self.values = layers.Dense(1)
 
     def call(self, inputs):
         # Forward pass
-        x = self.dense1(inputs)
+        x = self.conv1(inputs)
+        x = self.conv2(x)
+        x = self.flatten(x)
         logits = self.policy_logits(x)
-        v1 = self.dense2(inputs)
-        values = self.values(v1)
+        values = self.values(x)
         return logits, values
 
 
@@ -147,11 +172,20 @@ class MasterAgent():
 
         # Get input and output parameters and instantiate global network
         env = gym.make(self.game_name)
-        self.state_size = env.observation_space.shape[0]
-        self.action_size = env.action_space.n
-        print(self.state_size, self.action_size)
-        self.global_model = ActorCriticModel(self.state_size, self.action_size)  # global network
-        self.global_model(tf.convert_to_tensor(np.random.random((1, self.state_size)), dtype=tf.float32))
+        print(self.game_name + " observation space shape: " + str(env.observation_space.shape))
+        print(self.game_name + " action space shape: " + str(env.action_space.shape[0]))
+        self.state_size = env.observation_space.shape
+        # The game state converted to grayscale and 4 are stacked to form the input to the network
+        # Thus the original 3 sized 3rd axis (rgb) should have a size of 4
+        # Note: + operator on touples acts as merge
+        self.state_size = self.state_size[0:2]+(4,)
+        self.action_size = ACTION_SIZE
+        print("Network input space shape: ",  self.state_size)
+        print("Network output ", ACTION_SIZE)
+        # Instantiate global network
+        self.global_model = ActorCriticModel(self.state_size, self.action_size)
+        # Evaluate global network with random input
+        self.global_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
 
         # Instantiate optimizer
         self.opt = tf.train.AdamOptimizer(args.lr, use_locking=True)
@@ -162,16 +196,25 @@ class MasterAgent():
             random_agent.run()
             return
 
+        print("Starting training")
         res_queue = Queue()
 
         workers = [Worker(self.state_size, self.action_size, self.global_model, self.opt,
                           res_queue,
                           i, game_name=self.game_name,
-                          save_dir=self.save_dir) for i in range(multiprocessing.cpu_count())]
+                          save_dir=self.save_dir) for i in range(1)]
 
         for i, worker in enumerate(workers):
             print("Starting worker {}".format(i))
             worker.start()
+
+        # workers = Worker(self.state_size, self.action_size, self.global_model, self.opt,
+        #                  res_queue,
+        #                  0, game_name=self.game_name,
+        #                  save_dir=self.save_dir)
+        #
+        # print("Workers created, starting worker.")
+        # workers.start()
 
         moving_average_rewards = []  # record episode reward to plot
         while True:
@@ -180,6 +223,7 @@ class MasterAgent():
                 moving_average_rewards.append(reward)
             else:
                 break
+
         [w.join() for w in workers]
 
         plt.plot(moving_average_rewards)
@@ -190,8 +234,9 @@ class MasterAgent():
         plt.show()
 
     def play(self):
-        env = gym.make(self.game_name).unwrapped
-        state = env.reset()
+        env = gym.make(self.game_name)
+        env_state = env.reset()
+        state = processAndStackFrames(env_state)
         model = self.global_model
         model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
         print('Loading model from: {}'.format(model_path))
@@ -206,7 +251,8 @@ class MasterAgent():
                 policy, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
                 policy = tf.nn.softmax(policy)
                 action = np.argmax(policy)
-                state, reward, done, _ = env.step(action)
+                new_frame, reward, done, _ = env.step(action)
+                processAndStackFrames(new_frame, state)
                 reward_sum += reward
                 print("{}. Reward: {}, action: {}".format(step_counter, reward_sum, action))
                 step_counter += 1
@@ -246,29 +292,41 @@ class Worker(threading.Thread):
     global_moving_average_reward = 0
     best_score = 0
     save_lock = threading.Lock()
+    global_steps = 0
 
     def __init__(self, state_size, action_size, global_model, opt, result_queue, idx, game_name='CarRacing-v0',
                  save_dir='/tmp'):
         super(Worker, self).__init__()
         self.state_size = state_size
         self.action_size = action_size
+        self.actions = ACTIONS
         self.result_queue = result_queue
         self.global_model = global_model
         self.opt = opt
         self.local_model = ActorCriticModel(self.state_size, self.action_size)
         self.worker_idx = idx
         self.game_name = game_name
-        self.env = gym.make(self.game_name).unwrapped
+        self.env = gym.make(self.game_name)
         self.save_dir = save_dir
         self.ep_loss = 0.0
+        self.maxEpReward = 0.0
+
 
     def run(self):
         total_step = 1
         mem = Memory()
         while Worker.global_episode < args.max_eps:
-            current_state = self.env.reset() #Returns: observation (object): the initial observation of the env
+            # try:
+            env_state = self.env.reset() #Returns: observation (object): the initial observation of the env
+            self.env.render()
+            # except:
+            #     print("Exception while env.reset()")
+            #     env_state = np.random.random(self.state_size)
+
+            current_state = processAndStackFrames(env_state)
             mem.clear()
-            ep_reward = 0.
+            ep_reward = 0.0
+            self.maxEpReward = 0.0
             ep_steps = 0
             self.ep_loss = 0
 
@@ -279,12 +337,24 @@ class Worker(threading.Thread):
                     tf.convert_to_tensor(current_state[None, :],
                                          dtype=tf.float32))
                 probs = tf.nn.softmax(logits)
+                action = np.argmax(probs)
+                # action = np.random.choice(self.action_size, p=probs.numpy()[0])
+                # new_state, reward, done, info = self.env.step(self.actions[action])
+                new_state, reward, done, info = self.env.step(self.actions[action])
+                new_state = processAndStackFrames(new_state, current_state)
+                self.env.render()
 
-                action = np.random.choice(self.action_size, p=probs.numpy()[0])
-                new_state, reward, done, _ = self.env.step(action)
-                if done:
-                    reward = -1
                 ep_reward += reward
+
+                # Early termination
+                if ep_reward > self.maxEpReward:
+                    self.maxEpReward = ep_reward
+                if self.maxEpReward - ep_reward > 5:
+                    done = True
+
+                # clip reward
+                reward = np.clip(reward, -1, 1)
+
                 mem.store(current_state, action, reward)
 
                 if time_count == args.update_freq or done:
@@ -308,10 +378,11 @@ class Worker(threading.Thread):
                     time_count = 0
 
                     if done:  # done and print information
+                        Worker.global_steps += ep_steps
                         Worker.global_moving_average_reward = \
                             record(Worker.global_episode, ep_reward, self.worker_idx,
                                    Worker.global_moving_average_reward, self.result_queue,
-                                   self.ep_loss, ep_steps)
+                                   self.ep_loss, ep_steps, Worker.global_steps)
                         # We must use a lock to save our model and to print to prevent data races.
                         if ep_reward > Worker.best_score:
                             with Worker.save_lock:
@@ -330,11 +401,7 @@ class Worker(threading.Thread):
                 total_step += 1
         self.result_queue.put(None)
 
-    def compute_loss(self,
-                     done,
-                     new_state,
-                     memory,
-                     gamma=0.99):
+    def compute_loss(self, done, new_state, memory, gamma=0.99):
         if done:
             reward_sum = 0.  # terminal
         else:
@@ -350,7 +417,7 @@ class Worker(threading.Thread):
         discounted_rewards.reverse()
 
         logits, values = self.local_model(
-            tf.convert_to_tensor(np.vstack(memory.states),
+            tf.convert_to_tensor(np.stack(memory.states),
                                  dtype=tf.float32))
         # Get our advantages
         advantage = tf.convert_to_tensor(np.array(discounted_rewards)[:, None],
@@ -370,6 +437,24 @@ class Worker(threading.Thread):
         policy_loss -= 0.01 * entropy
         total_loss = tf.reduce_mean((0.5 * value_loss + policy_loss))
         return total_loss
+
+
+def processAndStackFrames(new_frame, current_state=None):
+    """Converts a frame (state from the gym environment) and stacks appends it to the current_state, wich
+    stores the previous 4 states of the environment.
+
+    :param new_frame: The new state/frame from the environment.
+    :param current_state: The state before stepping the environment and receiving a new frame (state).
+    It contains the environment's state from the previous 4 steps.
+    """
+    gray_frame = rgb2gray(new_frame)
+
+    if(current_state is not None):
+        gray_frame = np.expand_dims(gray_frame, axis=2)
+        new_state = np.append(current_state[:, :, 1:], gray_frame, axis=2)
+    else:
+        new_state = np.stack((gray_frame, gray_frame, gray_frame, gray_frame), axis=2)
+    return new_state
 
 
 #############################################################

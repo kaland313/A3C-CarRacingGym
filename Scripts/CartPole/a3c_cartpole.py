@@ -288,6 +288,7 @@ class Worker(threading.Thread):
 
                 action = np.random.choice(self.action_size, p=probs.numpy()[0])
                 new_state, reward, done, _ = self.env.step(action)
+                print("new_state", new_state.shape)
                 if done:
                     reward = -1
                 ep_reward += reward
@@ -296,6 +297,7 @@ class Worker(threading.Thread):
                 if time_count == args.update_freq or done:
                     # Calculate gradient wrt to local model. We do so by tracking the
                     # variables involved in computing the loss by using tf.GradientTape
+                    print("GRAD new_state", new_state.shape)
                     with tf.GradientTape() as tape:
                         total_loss = self.compute_loss(done,
                                                        new_state,
@@ -355,6 +357,7 @@ class Worker(threading.Thread):
             discounted_rewards.append(reward_sum)
         discounted_rewards.reverse()
 
+        print("memory shape", memory.states.shape)
         logits, values = self.local_model(
             tf.convert_to_tensor(np.vstack(memory.states),
                                  dtype=tf.float32))

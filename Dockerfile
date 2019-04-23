@@ -25,6 +25,7 @@ RUN echo "root:init" | chpasswd
 
 WORKDIR /tf
 
-CMD service ssh start
-CMD jupyter lab
+# Add entrypoint.sh and other available files to image
+# COPY ./DockerSetup/entrypoint.sh /tf
 
+CMD bash
