@@ -1,4 +1,17 @@
 #!/usr/bin/python
+
+# Call XInitThreads as the _very_ first thing.
+# After some Qt import, it's too late
+import ctypes
+import sys
+if sys.platform.startswith('linux'):
+    try:
+        x11 = ctypes.cdll.LoadLibrary('libX11.so')
+        x11.XInitThreads()
+    except:
+        print("Warning: failed to XInitThreads()")
+
+
 import tensorflow as tf
 import threading
 import numpy as np
@@ -114,9 +127,9 @@ def run_system_threads(session, data, summary, saver):
 
 def init_tf_summary(session):
     score_input = tf.placeholder(tf.int32)
-    tf.scalar_summary("score", score_input)
-    summary_op      =  tf.merge_all_summaries()
-    summary_writer  =  tf.train.SummaryWriter(Constants.LOG_FILE, session.graph)
+    tf.summary.scalar("score", score_input)
+    summary_op      =  tf.summary.merge_all()
+    summary_writer  =  tf.summary.FileWriter(Constants.LOG_FILE, session.graph)
     return summary_writer, summary_op, score_input
 
 

@@ -35,6 +35,12 @@ The current sript only works on a very basic level, only one worker is spawned a
 It's not very meaningful to run a test of the trained model, because the graphical output can not be viewed yet, however it can be done by entering: 
 
 `xvfb-run -a -s "-screen 0 640x480x24" python a3c_cartpole.py`
+
+## Code from oguzelibol/CarRacingA3C
+`cd UserScripts/oguzelibol-CarRacingA3C`
+
+`xvfb-run -a -s "-screen 0 640x480x24" python a3c.py `
+
 ## A3C CartPole script
 `cd UserScripts/CartPole`
 

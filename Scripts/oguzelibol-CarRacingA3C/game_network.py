@@ -27,7 +27,7 @@ class GameACNetwork(object):
       entropy = -tf.reduce_sum(self.pi * log_pi, reduction_indices=1)
 
       # policy loss (output)  (Adding minus, because the original paper's objective function is for gradient ascent, but we use gradient descent optimizer.)
-      policy_loss = - tf.reduce_sum( tf.reduce_sum( tf.mul( log_pi, self.a ), reduction_indices=1 ) * self.td + entropy * entropy_beta )
+      policy_loss = - tf.reduce_sum( tf.reduce_sum( tf.multiply( log_pi, self.a ), reduction_indices=1 ) * self.td + entropy * entropy_beta )
 
       # R (input for value)
       self.r = tf.placeholder("float", [None])
@@ -102,8 +102,8 @@ class GameACFFNetwork(GameACNetwork):
     # Conv2 params
     conv2_input_depth    =  Constants.CONV1_NUM_FILTERS
 
-    dense_layer_input    =  1 + (((1 + (Constants.IMAGE_SIZE - Constants.CONV1_FILTER_SIZE) / Constants.CONV1_FILTER_STRIDE) \
-                            - Constants.CONV2_FILTER_SIZE) / Constants.CONV2_FILTER_STRIDE)
+    dense_layer_input    =  int(1 + (((1 + (Constants.IMAGE_SIZE - Constants.CONV1_FILTER_SIZE) / Constants.CONV1_FILTER_STRIDE) \
+                            - Constants.CONV2_FILTER_SIZE) / Constants.CONV2_FILTER_STRIDE))
 
     dense_layer_size     =  dense_layer_input * dense_layer_input * Constants.CONV2_NUM_FILTERS
 
