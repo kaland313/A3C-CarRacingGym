@@ -13,6 +13,7 @@ if sys.platform.startswith('linux'):
 
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
+import math
 import threading
 import gym
 import multiprocessing
@@ -26,14 +27,7 @@ import tensorflow as tf
 from tensorflow.python import keras
 from tensorflow.python.keras import layers
 
-
-ACTION_ACCEL = [0, 1, 0]
-ACTION_BRAKE = [0, 0, 0.8]
-ACTION_LEFT  = [-1, 0, 0]
-ACTION_RIGHT = [1, 0, 0]
-ACTIONS      = [ACTION_ACCEL, ACTION_LEFT, ACTION_RIGHT, ACTION_BRAKE]
-ACTION_SIZE  = len(ACTIONS)
-
+import constants as Constants
 
 tf.enable_eager_execution()
 
@@ -91,6 +85,13 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
     result_queue.put(global_ep_reward)
     return global_ep_reward
 
+# log uniform
+def log_uniform(lo, hi, rate):
+    log_lo = math.log(lo)
+    log_hi = math.log(hi)
+    v = log_lo * (1-rate) + log_hi * rate
+    return math.exp(v)
+
 
 #############################################################
 # Random agent
@@ -142,8 +143,8 @@ class ActorCriticModel(keras.Model):
         super(ActorCriticModel, self).__init__()
         self.state_size = state_size
         self.action_size = action_size
-        self.conv1 = layers.Conv2D(16, 8, strides=4, data_format="channels_last")
-        self.conv2 = layers.Conv2D(32, 3, strides=2, data_format="channels_last")
+        self.conv1 = layers.Conv2D(16, 8, strides=4, activation='relu', data_format="channels_last")
+        self.conv2 = layers.Conv2D(32, 3, strides=2, activation='relu', data_format="channels_last")
         self.flatten = layers.Flatten()
         self.policy_logits = layers.Dense(action_size)
         self.values = layers.Dense(1)
@@ -175,20 +176,23 @@ class MasterAgent():
         print(self.game_name + " observation space shape: " + str(env.observation_space.shape))
         print(self.game_name + " action space shape: " + str(env.action_space.shape[0]))
         self.state_size = env.observation_space.shape
-        # The game state converted to grayscale and 4 are stacked to form the input to the network
+        # The game state converted to grayscale and Constants.IMAGE_DEPTH=4 are stacked to form the input to the network
         # Thus the original 3 sized 3rd axis (rgb) should have a size of 4
         # Note: + operator on touples acts as merge
-        self.state_size = self.state_size[0:2]+(4,)
-        self.action_size = ACTION_SIZE
+        self.state_size = self.state_size[0:2]+(Constants.IMAGE_DEPTH,)
+        self.action_size = Constants.ACTION_SIZE
         print("Network input space shape: ",  self.state_size)
-        print("Network output ", ACTION_SIZE)
+        print("Network output ", Constants.ACTION_SIZE)
+        self.actions = Constants.ACTIONS
         # Instantiate global network
         self.global_model = ActorCriticModel(self.state_size, self.action_size)
         # Evaluate global network with random input
         self.global_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
 
         # Instantiate optimizer
-        self.opt = tf.train.AdamOptimizer(args.lr, use_locking=True)
+        initial_learning_rate = log_uniform(Constants.ALPHA.LOW, Constants.ALPHA.HIGH, Constants.ALPHA.LOG_RATE)
+        self.opt = tf.train.RMSPropOptimizer(initial_learning_rate, decay=Constants.RMSP.ALPHA,
+                                             epsilon=Constants.RMSP.EPSILON, use_locking=True, centered=True)
 
     def train(self):
         if args.algorithm == 'random':
@@ -248,10 +252,14 @@ class MasterAgent():
         try:
             while not done:
                 env.render(mode='rgb_array')
-                policy, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
-                policy = tf.nn.softmax(policy)
-                action = np.argmax(policy)
-                new_frame, reward, done, _ = env.step(action)
+                logits, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
+                probs = tf.nn.softmax(logits)
+                action = np.argmax(probs)
+                game_commands = self.actions[action]
+                # Action softening based on action certainty
+                game_commands = np.max(probs) * np.array(game_commands)
+                new_frame, reward, done, _ = env.step(game_commands)
+                env.render()
                 processAndStackFrames(new_frame, state)
                 reward_sum += reward
                 print("{}. Reward: {}, action: {}".format(step_counter, reward_sum, action))
@@ -299,7 +307,7 @@ class Worker(threading.Thread):
         super(Worker, self).__init__()
         self.state_size = state_size
         self.action_size = action_size
-        self.actions = ACTIONS
+        self.actions = Constants.ACTIONS
         self.result_queue = result_queue
         self.global_model = global_model
         self.opt = opt
@@ -338,9 +346,15 @@ class Worker(threading.Thread):
                                          dtype=tf.float32))
                 probs = tf.nn.softmax(logits)
                 action = np.argmax(probs)
+
+                game_commands = self.actions[action]
+
+                # Action softening based on action certainty
+                game_commands = np.max(probs)*np.array(game_commands)
+
                 # action = np.random.choice(self.action_size, p=probs.numpy()[0])
                 # new_state, reward, done, info = self.env.step(self.actions[action])
-                new_state, reward, done, info = self.env.step(self.actions[action])
+                new_state, reward, done, info = self.env.step(game_commands)
                 new_state = processAndStackFrames(new_state, current_state)
                 self.env.render()
 
