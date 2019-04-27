@@ -29,6 +29,13 @@ from tensorflow.python.keras import layers
 
 import constants as Constants
 
+import subprocess
+import sys
+from mpi4py import MPI
+
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+
 tf.enable_eager_execution()
 
 #############################################################
@@ -102,7 +109,6 @@ class RandomAgent:
     :param env_name: Name of the environment to be played
     :param max_eps: Maximum number of episodes to run agent for.
     """
-
     def __init__(self, env_name, max_eps):
         self.env = gym.make(env_name)
         self.max_episodes = max_eps
@@ -134,6 +140,30 @@ class RandomAgent:
         print("Average score across {} episodes: {}".format(self.max_episodes, final_avg))
         return final_avg
 
+def mpi_fork(n):
+    """Re-launches the current script with workers
+    Returns "parent" for original parent, "child" for MPI children
+    (from https://github.com/garymcintire/mpi_util/)
+    """
+    if n<=1:
+        return "child"
+    if os.getenv("IN_MPI") is None:
+        env = os.environ.copy()
+        env.update(
+            MKL_NUM_THREADS="1",
+            OMP_NUM_THREADS="1",
+            IN_MPI="1"
+        )
+        cmd = ["mpirun", "-np", str(n), sys.executable] + ['-u'] + sys.argv
+        print(cmd)
+        subprocess.check_call(cmd, env=env)
+        return "parent"
+    else:
+        global nworkers, rank
+        nworkers = MPI.COMM_WORLD.Get_size()
+        rank = MPI.COMM_WORLD.Get_rank()
+        print('assigning the rank and nworkers', nworkers, rank)
+        return "child"
 
 #############################################################
 # Actor-critic model definition
@@ -164,8 +194,8 @@ class ActorCriticModel(keras.Model):
 #############################################################
 class MasterAgent():
     def __init__(self):
+        self.game_name = Constants.GAME
         # Logging directory setup
-        self.game_name = 'CarRacing-v0'
         save_dir = args.save_dir
         self.save_dir = save_dir
         if not os.path.exists(save_dir):
@@ -175,15 +205,17 @@ class MasterAgent():
         env = gym.make(self.game_name)
         print(self.game_name + " observation space shape: " + str(env.observation_space.shape))
         print(self.game_name + " action space shape: " + str(env.action_space.shape[0]))
-        self.state_size = env.observation_space.shape
+
         # The game state converted to grayscale and Constants.IMAGE_DEPTH=4 are stacked to form the input to the network
         # Thus the original 3 sized 3rd axis (rgb) should have a size of 4
         # Note: + operator on touples acts as merge
-        self.state_size = self.state_size[0:2]+(Constants.IMAGE_DEPTH,)
+        self.state_size = env.observation_space.shape[0:2]+(Constants.IMAGE_DEPTH,)
         self.action_size = Constants.ACTION_SIZE
         print("Network input space shape: ",  self.state_size)
         print("Network output ", Constants.ACTION_SIZE)
+
         self.actions = Constants.ACTIONS
+
         # Instantiate global network
         self.global_model = ActorCriticModel(self.state_size, self.action_size)
         # Evaluate global network with random input
@@ -194,6 +226,15 @@ class MasterAgent():
         self.opt = tf.train.RMSPropOptimizer(initial_learning_rate, decay=Constants.RMSP.ALPHA,
                                              epsilon=Constants.RMSP.EPSILON, use_locking=True, centered=True)
 
+        # Initialize global counters
+        self.global_steps = 0
+        self.global_episode = 0
+        self.global_moving_average_reward = 0
+        self.best_training_score = 0
+        self.result_queue = Queue()
+        self.moving_average_rewards = []  # record episode reward to plot
+
+
     def train(self):
         if args.algorithm == 'random':
             random_agent = RandomAgent(self.game_name, args.max_eps)
@@ -201,40 +242,23 @@ class MasterAgent():
             return
 
         print("Starting training")
-        res_queue = Queue()
+        # res_queue = Queue()
 
-        workers = [Worker(self.state_size, self.action_size, self.global_model, self.opt,
-                          res_queue,
-                          i, game_name=self.game_name,
-                          save_dir=self.save_dir) for i in range(1)]
+        mpi_fork(Constants.NUM_THREADS)
 
-        for i, worker in enumerate(workers):
-            print("Starting worker {}".format(i))
-            worker.start()
+        m_send_packet = {'weights': self.global_model.get_weights()}
+        # Broadcasting weights to workers
+        comm.bcast(m_send_packet, root=0)
 
-        # workers = Worker(self.state_size, self.action_size, self.global_model, self.opt,
-        #                  res_queue,
-        #                  0, game_name=self.game_name,
-        #                  save_dir=self.save_dir)
-        #
-        # print("Workers created, starting worker.")
-        # workers.start()
-
-        moving_average_rewards = []  # record episode reward to plot
-        while True:
-            reward = res_queue.get()
-            if reward is not None:
-                moving_average_rewards.append(reward)
-            else:
-                break
+        while self.global_episode < args.max_eps:
+            self.receive_and_update_weights()
 
         [w.join() for w in workers]
 
-        plt.plot(moving_average_rewards)
+        plt.plot(self.moving_average_rewards)
         plt.ylabel('Moving average ep reward')
         plt.xlabel('Step')
-        plt.savefig(os.path.join(self.save_dir,
-                                 '{} Moving Average.png'.format(self.game_name)))
+        plt.savefig(os.path.join(self.save_dir, '{} Moving Average.png'.format(self.game_name)))
         plt.show()
 
     def play(self):
@@ -269,6 +293,40 @@ class MasterAgent():
         finally:
             env.close()
 
+    def receive_and_update_weights(self):
+
+        m_recv_packet = comm.recv(source=MPI.ANY_SOURCE)
+
+        # Push gradients to global model
+        self.opt.apply_gradients(zip(m_recv_packet['grads'], self.global_model.trainable_weights))
+
+        m_send_packet = {'weights': self.global_model.get_weights(),
+                         'global_episode': self.global_episode + 1}
+
+        comm.send(m_send_packet, dest=m_recv_packet['worker_rank'])
+
+        if m_recv_packet['ep_done']:  # done and print information
+            self.global_steps += m_recv_packet['ep_steps']
+            self.global_moving_average_reward = record(self.global_episode,
+                                                       m_recv_packet['ep_reward'],
+                                                       m_recv_packet['worker_rank'],
+                                                       self.global_moving_average_reward,
+                                                       self.result_queue,
+                                                       m_recv_packet['ep_loss'],
+                                                       m_recv_packet['ep_steps'],
+                                                       self.global_steps)
+            self.moving_average_rewards.append(self.global_moving_average_reward)
+
+            if m_recv_packet['ep_reward'] > self.best_training_score:
+                print("Saving best model to {}, episode score: {}".format(self.save_dir, m_recv_packet['ep_reward']))
+                self.global_model.save_weights(
+                    os.path.join(self.save_dir,
+                                 'model_{}.h5'.format(self.game_name))
+                )
+                self.best_training_score = m_recv_packet['ep_reward']
+            self.global_episode += 1
+
+
 
 #############################################################
 # Memory class
@@ -293,40 +351,31 @@ class Memory:
 #############################################################
 # Worker agent definition
 #############################################################
-class Worker(threading.Thread):
-    # Set up global variables across different threads
-    global_episode = 0
-    # Moving average reward
-    global_moving_average_reward = 0
-    best_score = 0
-    save_lock = threading.Lock()
-    global_steps = 0
-
-    def __init__(self, state_size, action_size, global_model, opt, result_queue, idx, game_name='CarRacing-v0',
-                 save_dir='/tmp'):
-        super(Worker, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
-        self.actions = Constants.ACTIONS
-        self.result_queue = result_queue
-        self.global_model = global_model
-        self.opt = opt
-        self.local_model = ActorCriticModel(self.state_size, self.action_size)
-        self.worker_idx = idx
-        self.game_name = game_name
+class Worker:
+    def __init__(self, ):
+        self.game_name = Constants.GAME
         self.env = gym.make(self.game_name)
-        self.save_dir = save_dir
+        self.state_size = self.env.observation_space.shape[0:2]+(Constants.IMAGE_DEPTH,)
+        self.action_size = Constants.ACTION_SIZE
+        self.actions = Constants.ACTIONS
+        self.local_model = ActorCriticModel(self.state_size, self.action_size)
         self.ep_loss = 0.0
         self.maxEpReward = 0.0
+        self.global_episode = 0
 
+        # Receive global weights from master
+        recv_packet = comm.bcast(None, root=0)
+        # Initialize local model with new weights
+        self.local_model.set_weights(recv_packet['weights'])
 
     def run(self):
+        print("Starting worker", rank)
         total_step = 1
         mem = Memory()
-        while Worker.global_episode < args.max_eps:
+        while self.global_episode < args.max_eps:
             # try:
             env_state = self.env.reset() #Returns: observation (object): the initial observation of the env
-            self.env.render()
+            # self.env.render()
             # except:
             #     print("Exception while env.reset()")
             #     env_state = np.random.random(self.state_size)
@@ -347,16 +396,17 @@ class Worker(threading.Thread):
                 probs = tf.nn.softmax(logits)
                 action = np.argmax(probs)
 
+                # Random action based on the probabilities to force exploration
+                # action = np.random.choice(self.action_size, p=probs.numpy()[0])
+
                 game_commands = self.actions[action]
 
                 # Action softening based on action certainty
-                game_commands = np.max(probs)*np.array(game_commands)
+                game_commands = probs.numpy()[0, action]*np.array(game_commands)
 
-                # action = np.random.choice(self.action_size, p=probs.numpy()[0])
-                # new_state, reward, done, info = self.env.step(self.actions[action])
                 new_state, reward, done, info = self.env.step(game_commands)
                 new_state = processAndStackFrames(new_state, current_state)
-                self.env.render()
+                # self.env.render()
 
                 ep_reward += reward
 
@@ -375,45 +425,36 @@ class Worker(threading.Thread):
                     # Calculate gradient wrt to local model. We do so by tracking the
                     # variables involved in computing the loss by using tf.GradientTape
                     with tf.GradientTape() as tape:
-                        total_loss = self.compute_loss(done,
-                                                       new_state,
-                                                       mem,
-                                                       args.gamma)
+                        total_loss = self.compute_loss(done, new_state, mem, args.gamma)
                     self.ep_loss += total_loss
                     # Calculate local gradients
                     grads = tape.gradient(total_loss, self.local_model.trainable_weights)
-                    # Push local gradients to global model
-                    self.opt.apply_gradients(zip(grads,
-                                                 self.global_model.trainable_weights))
+
+                    send_packet = {'worker_rank': rank,
+                                   'grads': grads,
+                                   'ep_done': done,
+                                   'ep_reward': ep_reward,
+                                   'ep_loss': self.ep_loss,
+                                   'ep_steps': ep_steps
+                                   }
+                    # Send episode data the master process
+                    comm.send(send_packet, dest=0)
+
+                    # Receive new weights from the master process
+                    recv_packet = comm.recv(source=0)
+                    new_weights = recv_packet['weights']
+                    self.global_episode = recv_packet['global_episode']
+
                     # Update local model with new weights
-                    self.local_model.set_weights(self.global_model.get_weights())
+                    self.local_model.set_weights(new_weights)
 
                     mem.clear()
                     time_count = 0
 
-                    if done:  # done and print information
-                        Worker.global_steps += ep_steps
-                        Worker.global_moving_average_reward = \
-                            record(Worker.global_episode, ep_reward, self.worker_idx,
-                                   Worker.global_moving_average_reward, self.result_queue,
-                                   self.ep_loss, ep_steps, Worker.global_steps)
-                        # We must use a lock to save our model and to print to prevent data races.
-                        if ep_reward > Worker.best_score:
-                            with Worker.save_lock:
-                                print("Saving best model to {}, "
-                                      "episode score: {}".format(self.save_dir, ep_reward))
-                                self.global_model.save_weights(
-                                    os.path.join(self.save_dir,
-                                                 'model_{}.h5'.format(self.game_name))
-                                )
-                                Worker.best_score = ep_reward
-                        Worker.global_episode += 1
                 ep_steps += 1
-
                 time_count += 1
                 current_state = new_state
                 total_step += 1
-        self.result_queue.put(None)
 
     def compute_loss(self, done, new_state, memory, gamma=0.99):
         if done:
@@ -478,9 +519,13 @@ if __name__ == '__main__':
     print(args)
     # randomAgent = RandomAgent('CarRacing-v0', 4000)
     # randomAgent.run()
-    master = MasterAgent()
-    if args.train:
-        master.train()
+    if rank == 0:
+        master = MasterAgent()
+        if args.train:
+            master.train()
+        else:
+            master.play()
     else:
-        master.play()
+        worker = Worker()
+        worker.run()
 
