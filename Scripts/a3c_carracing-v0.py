@@ -92,7 +92,7 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
         'Worker: ' + str(worker_idx) + ' | ' +
         'Global steps: ' + str(global_steps)
     )
-    csv_logger.writerow([str(episode), str(global_ep_reward), str(episode_reward), str(total_loss / float(num_steps)),
+    csv_logger.writerow([str(episode), str(global_ep_reward), str(episode_reward), str(float(total_loss) / float(num_steps)),
                          str(num_steps), str(global_steps), str(worker_idx)])
     result_queue.put(global_ep_reward)
     return global_ep_reward
@@ -206,9 +206,11 @@ class MasterAgent():
         self.save_dir = save_dir
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        self.log_file = open(save_dir+'training_log.csv', 'a', newline='')
+        self.log_file = open(save_dir+'training_log.csv', 'w', newline='')
         self.log_writer = csv.writer(self.log_file, delimiter='\t')
-        self.log_writer.writerow(['Test', str(1.13)])
+        self.log_writer.writerow(['episode', 'global_ep_reward', 'episode_reward', 'loss', 'num_steps', 'global_steps',
+                                  'worker_idx'])
+        self.log_file.flush()
 
 
         # Get input and output parameters and instantiate global network
@@ -326,13 +328,13 @@ class MasterAgent():
                                                        m_recv_packet['ep_steps'],
                                                        self.global_steps,
                                                        self.log_writer)
+            self.log_file.flush()
             self.moving_average_rewards.append(self.global_moving_average_reward)
 
             if self.global_moving_average_reward > self.best_training_score:
-                print("Saving best model to {}, episode score: {}".format(self.save_dir, m_recv_packet['ep_reward']))
+                print("Saving best model to {}, moving awerage reward: {}".format(self.save_dir, self.global_moving_average_reward))
                 self.global_model.save_weights(
-                    os.path.join(self.save_dir,
-                                 'model_{}.h5'.format(self.game_name))
+                    os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
                 )
                 self.best_training_score = self.global_moving_average_reward
             self.global_episode += 1
