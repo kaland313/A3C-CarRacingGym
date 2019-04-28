@@ -33,6 +33,8 @@ import subprocess
 import sys
 from mpi4py import MPI
 
+import csv
+
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
@@ -64,7 +66,8 @@ args = parser.parse_args()
 # Helper functions
 #############################################################
 
-def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps):
+def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps,
+           csv_logger):
     """Helper function to store score and print statistics.
 
     :param episode: Current episode
@@ -89,6 +92,8 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
         'Worker: ' + str(worker_idx) + ' | ' +
         'Global steps: ' + str(global_steps)
     )
+    csv_logger.writerow([str(episode), str(global_ep_reward), str(episode_reward), str(total_loss / float(num_steps)),
+                         str(num_steps), str(global_steps), str(worker_idx)])
     result_queue.put(global_ep_reward)
     return global_ep_reward
 
@@ -154,7 +159,8 @@ def mpi_fork(n):
             OMP_NUM_THREADS="1",
             IN_MPI="1"
         )
-        cmd = ["mpirun", "--allow-run-as-root", "-np", str(n), sys.executable] + ['-u'] + sys.argv
+        # cmd = ["mpirun", "--allow-run-as-root", "-np", str(n), sys.executable] + ['-u'] + sys.argv
+        cmd = ["mpirun", "-np", str(n), sys.executable] + ['-u'] + sys.argv
         print(cmd)
         subprocess.check_call(cmd, env=env)
         return "parent"
@@ -200,6 +206,10 @@ class MasterAgent():
         self.save_dir = save_dir
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
+        self.log_file = open(save_dir+'training_log.csv', 'a', newline='')
+        self.log_writer = csv.writer(self.log_file, delimiter='\t')
+        self.log_writer.writerow(['Test', str(1.13)])
+
 
         # Get input and output parameters and instantiate global network
         env = gym.make(self.game_name)
@@ -253,7 +263,7 @@ class MasterAgent():
         while self.global_episode < args.max_eps:
             self.receive_and_update_weights()
 
-        [w.join() for w in workers]
+        self.log_file.close()
 
         plt.plot(self.moving_average_rewards)
         plt.ylabel('Moving average ep reward')
@@ -314,16 +324,17 @@ class MasterAgent():
                                                        self.result_queue,
                                                        m_recv_packet['ep_loss'],
                                                        m_recv_packet['ep_steps'],
-                                                       self.global_steps)
+                                                       self.global_steps,
+                                                       self.log_writer)
             self.moving_average_rewards.append(self.global_moving_average_reward)
 
-            if m_recv_packet['ep_reward'] > self.best_training_score:
+            if self.global_moving_average_reward > self.best_training_score:
                 print("Saving best model to {}, episode score: {}".format(self.save_dir, m_recv_packet['ep_reward']))
                 self.global_model.save_weights(
                     os.path.join(self.save_dir,
                                  'model_{}.h5'.format(self.game_name))
                 )
-                self.best_training_score = m_recv_packet['ep_reward']
+                self.best_training_score = self.global_moving_average_reward
             self.global_episode += 1
 
 

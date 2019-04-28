@@ -18,6 +18,9 @@ RUN pip3 install matplotlib
 RUN pip3 install jupyterlab
 
 COPY ./DockerSetup/jupyter_notebook_config.py /root/.jupyter/jupyter_notebook_config.py
+COPY ./DockerSetup/jupyter_notebook_config.json /root/.jupyter/jupyter_notebook_config.json
+EXPOSE 8888
+
 COPY ./Scripts /tf/UserScripts
 
 RUN echo "PermitRootLogin yes\nSubsystem sftp internal-sftp" > /etc/ssh/sshd_config
