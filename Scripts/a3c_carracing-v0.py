@@ -154,7 +154,7 @@ def mpi_fork(n):
             OMP_NUM_THREADS="1",
             IN_MPI="1"
         )
-        cmd = ["mpirun", "-np", str(n), sys.executable] + ['-u'] + sys.argv
+        cmd = ["mpirun", "--allow-run-as-root", "-np", str(n), sys.executable] + ['-u'] + sys.argv
         print(cmd)
         subprocess.check_call(cmd, env=env)
         return "parent"
