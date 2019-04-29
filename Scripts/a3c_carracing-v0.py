@@ -183,6 +183,7 @@ class ActorCriticModel(keras.Model):
         self.conv1 = layers.Conv2D(16, 8, strides=4, activation='relu', data_format="channels_last")
         self.conv2 = layers.Conv2D(32, 3, strides=2, activation='relu', data_format="channels_last")
         self.flatten = layers.Flatten()
+        self.dense1 = layers.Dense(Constants.DENSE_LAYER_INPUT_SIZE, activation='relu')
         self.policy_logits = layers.Dense(action_size)
         self.values = layers.Dense(1)
 
@@ -191,6 +192,7 @@ class ActorCriticModel(keras.Model):
         x = self.conv1(inputs)
         x = self.conv2(x)
         x = self.flatten(x)
+        x = self.dense1(x)
         logits = self.policy_logits(x)
         values = self.values(x)
         return logits, values
