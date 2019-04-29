@@ -13,12 +13,23 @@ To set up the docker image it can be pulled from the Docker Hub repository or bu
 
 `docker build --tag=a3c-carracing-gym .`
 # Running the image
+## If bulit from GitHub 
 If the image was built from the github repo, inside the GitHub repo root folder (A3C-CarRacingGym) run:
 
 `docker run -it --rm -v $(pwd)/Scripts:/tf/Scripts -v $(pwd)/Outputs:/tf/Outputs -p 8888:8888 --name=a3c-carracing-gym a3c-carracing-gym`
 
-Otherwise an Output folder will be created in the directory where the above docker command is executed (due to the `v $(pwd)/Outputs:/tf/Outputs` option). 
+## If pulled from Docker Hub
+If you didn't pull the github and you'd like to run the trained model included in the docker image, run the following command (note that int this case you can only transfer files from and to the container via Jupyter's file manager): 
 
+`docker run -it --rm -p 8888:8888 --name=a3c-carracing-gym a3c-carracing-gym`
+
+If you'd like to train the network first, run:
+
+`docker run -it --rm -v $(pwd)/Outputs:/tf/Outputs -p 8888:8888 --name=a3c-carracing-gym a3c-carracing-gym`
+
+In this case an Output folder will be created in the directory where the above docker command is executed, and the trained model will be saved there. 
+
+## Geting a bash shell inside the container
 The container should start with a bash shell, if this is not the case, execute: 
 
 `docker exec -it a3c-carracing-gym /bin/bash`
