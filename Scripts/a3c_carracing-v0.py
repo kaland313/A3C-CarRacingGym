@@ -39,6 +39,9 @@ comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
 tf.enable_eager_execution()
+np.set_printoptions(precision=3)
+np.set_printoptions(suppress=True)
+np.set_printoptions(sign=' ')
 
 #############################################################
 # Command line argument parser
@@ -53,7 +56,7 @@ parser.add_argument('--lr', default=0.001,
                     help='Learning rate for the shared optimizer.')
 parser.add_argument('--update-freq', default=20, type=int,
                     help='How often to update the global model.')
-parser.add_argument('--max-eps', default=1000, type=int,
+parser.add_argument('--max-eps', default=50000, type=int,
                     help='Global maximum number of episodes to run.')
 parser.add_argument('--gamma', default=0.99,
                     help='Discount factor of rewards.')
@@ -104,6 +107,32 @@ def log_uniform(lo, hi, rate):
     v = log_lo * (1-rate) + log_hi * rate
     return math.exp(v)
 
+def mpi_fork(n):
+    """Re-launches the current script with workers
+    Returns "parent" for original parent, "child" for MPI children
+    (from https://github.com/garymcintire/mpi_util/)
+    """
+    if n<=1:
+        return "child"
+    if os.getenv("IN_MPI") is None:
+        env = os.environ.copy()
+        env.update(
+            MKL_NUM_THREADS="1",
+            OMP_NUM_THREADS="1",
+            IN_MPI="1"
+        )
+        # cmd = ["mpirun", "--allow-run-as-root", "-np", str(n), sys.executable] + ['-u'] + sys.argv
+        cmd = ["mpirun", "-np", str(n), sys.executable] + ['-u'] + sys.argv
+        print(cmd)
+        subprocess.check_call(cmd, env=env)
+        return "parent"
+    else:
+        global nworkers, rank
+        nworkers = MPI.COMM_WORLD.Get_size()
+        rank = MPI.COMM_WORLD.Get_rank()
+        print('assigning the rank and nworkers', nworkers, rank)
+        return "child"
+
 
 #############################################################
 # Random agent
@@ -145,40 +174,12 @@ class RandomAgent:
         print("Average score across {} episodes: {}".format(self.max_episodes, final_avg))
         return final_avg
 
-def mpi_fork(n):
-    """Re-launches the current script with workers
-    Returns "parent" for original parent, "child" for MPI children
-    (from https://github.com/garymcintire/mpi_util/)
-    """
-    if n<=1:
-        return "child"
-    if os.getenv("IN_MPI") is None:
-        env = os.environ.copy()
-        env.update(
-            MKL_NUM_THREADS="1",
-            OMP_NUM_THREADS="1",
-            IN_MPI="1"
-        )
-        # cmd = ["mpirun", "--allow-run-as-root", "-np", str(n), sys.executable] + ['-u'] + sys.argv
-        cmd = ["mpirun", "-np", str(n), sys.executable] + ['-u'] + sys.argv
-        print(cmd)
-        subprocess.check_call(cmd, env=env)
-        return "parent"
-    else:
-        global nworkers, rank
-        nworkers = MPI.COMM_WORLD.Get_size()
-        rank = MPI.COMM_WORLD.Get_rank()
-        print('assigning the rank and nworkers', nworkers, rank)
-        return "child"
-
 #############################################################
 # Actor-critic model definition
 #############################################################
 class ActorCriticModel(keras.Model):
     def __init__(self, state_size, action_size):
         super(ActorCriticModel, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
         self.conv1 = layers.Conv2D(16, 8, strides=4, activation='relu', data_format="channels_last")
         self.conv2 = layers.Conv2D(32, 3, strides=2, activation='relu', data_format="channels_last")
         self.flatten = layers.Flatten()
@@ -287,7 +288,7 @@ class MasterAgent():
 
         try:
             while not done:
-                env.render(mode='rgb_array')
+                env.render()
                 logits, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
                 probs = tf.nn.softmax(logits)
                 action = np.argmax(probs)
@@ -295,10 +296,12 @@ class MasterAgent():
                 # Action softening based on action certainty
                 game_commands = np.max(probs) * np.array(game_commands)
                 new_frame, reward, done, _ = env.step(game_commands)
-                env.render()
-                processAndStackFrames(new_frame, state)
+                state = processAndStackFrames(new_frame, state)
                 reward_sum += reward
-                print("{}. Reward: {}, action: {}".format(step_counter, reward_sum, action))
+                # print("{}. Reward: {}, action: {}".format(step_counter, reward_sum, action))
+                print("Step: {:>4} | Reward: {:>4.1f} | ActionProbabilites: {} | ActionIdx: {}({}) | Steer,Gas,Break: {} "
+                      .format(step_counter, reward_sum, np.array(probs)[0], action, Constants.ACTION_NAMES[action],
+                              game_commands))
                 step_counter += 1
         except KeyboardInterrupt:
             print("Received Keyboard Interrupt. Shutting down.")
@@ -487,6 +490,7 @@ class Worker:
         logits, values = self.local_model(
             tf.convert_to_tensor(np.stack(memory.states),
                                  dtype=tf.float32))
+
         # Get our advantages
         advantage = tf.convert_to_tensor(np.array(discounted_rewards)[:, None],
                                          dtype=tf.float32) - values
@@ -505,6 +509,29 @@ class Worker:
         policy_loss -= 0.01 * entropy
         total_loss = tf.reduce_mean((0.5 * value_loss + policy_loss))
         return total_loss
+
+        ##############################################################
+        # Not Tested, code snippet based on oguzelibol-CarRacingA3C
+        # probs = tf.nn.softmax(logits)
+        # action = np.argmax(probs)
+        #
+        # # avoid NaN with clipping when value in pi becomes zero
+        # log_pi = tf.log(tf.clip_by_value(probs, 1e-20, 1.0))
+        #
+        # # policy entropy
+        # entropy = -tf.reduce_sum(probs * log_pi, reduction_indices=1)
+        #
+        # td = discounted_rewards - values
+        # # policy loss (output)  (Adding minus, because the original paper's objective function is for gradient ascent, but we use gradient descent optimizer.)
+        # policy_loss = - tf.reduce_sum(tf.reduce_sum(tf.multiply(log_pi, action), reduction_indices=1)
+        #                               * td + entropy * Constants.ENTROPY_BETA)
+        #
+        # # value loss (output)
+        # # (Learning rate for Critic is half of Actor's, so multiply by 0.5)
+        # value_loss = 0.5 * tf.nn.l2_loss(discounted_rewards - values)
+        #
+        # # gradienet of policy and value are summed up
+        # return policy_loss + value_loss
 
 
 def processAndStackFrames(new_frame, current_state=None):

@@ -1,11 +1,10 @@
 # A3C-CarRacingGym
 A3C deep reinforcement learning algoritm applied to the CarRacing-v0 gym running in a docker container
 # Prerequisites 
-* nvidia-docker installed on the host machine
-* CUDA capable GPU with CUDA 10 installed
+* Docker installation (no gpu needed)
 # Setting up the docker image
 To set up the docker image it can be pulled from the Docker Hub repository or build based on this GitHub repository
-## Pulling the container
+## Pulling the image
 `docker pull kaland/a3c-carracing-gym`
 ## Cloning the GitHub repo and building the image
 `git clone https://github.com/kaland313/A3C-CarRacingGym.git`
@@ -16,26 +15,34 @@ To set up the docker image it can be pulled from the Docker Hub repository or bu
 # Running the image
 If the image was built from the github repo, inside the GitHub repo root folder (A3C-CarRacingGym) run:
 
-`docker run -it --rm --runtime=nvidia -v $(pwd)/Scripts:/tf/UserScripts -v $(pwd)/Outputs:/tf/Outputs -p 8888:8888 --name=a3c-carracing-gym a3c-carracing-gym`
+`docker run -it --rm -v $(pwd)/Scripts:/tf/Scripts -v $(pwd)/Outputs:/tf/Outputs -p 8888:8888 --name=a3c-carracing-gym a3c-carracing-gym`
 
 Otherwise an Output folder will be created in the directory where the above docker command is executed (due to the `v $(pwd)/Outputs:/tf/Outputs` option). 
-# Getting a bash shell in the container
+
 The container should start with a bash shell, if this is not the case, execute: 
 
 `docker exec -it a3c-carracing-gym /bin/bash`
-# Training the network
-## A3C CartPole code based CarRacing script
+# Training a model
 In order to run train the model enter the following commands to the bash shell of the container:
 
-`cd UserScripts`
+`cd Scripts`
 
-`xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py --train`
+`xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py --train --max-eps=20000` 
 
-The current sript only works on a very basic level, only one worker is spawned and the parameters of the optimizer are not selected correctly, thus it converges very slowly/dowesn't converge to the optimal model. 
-It's not very meaningful to run a test of the trained model, because the graphical output can not be viewed yet, however it can be done by entering: 
+# Running the trained model,
+A trained model is included in this repository at: [Outputs/model_CarRacing-v0.h5](https://github.com/kaland313/A3C-CarRacingGym/blob/master/Outputs/model_CarRacing-v0.h5). 
+
+The docker container doesn't have a graphical output at the moment, thus only command line output is given, when running a model: 
 
 `xvfb-run -a -s "-screen 0 640x480x24" python a3c_cartpole.py`
 
+This will load a model from `Outputs/model_CarRacing-v0.h5` and run it for one episode (no eraly termination).
+
+Outside the docker container with an apropriately set up python environment the graphical output of the gym can be viewed by running:
+
+`python a3c_cartpole.py`
+
+# Other code scripts for reference
 ## Code from oguzelibol/CarRacingA3C
 `cd UserScripts/oguzelibol-CarRacingA3C`
 
@@ -54,3 +61,6 @@ In the Dockerfile I used some parts from the Docker file on https://github.com/f
 
 
 Scripts in the oguzelibol-CarRacingA3C folder are from https://github.com/oguzelibol/CarRacingA3C
+
+
+The mpi_fork function is from https://github.com/garymcintire/mpi_util/

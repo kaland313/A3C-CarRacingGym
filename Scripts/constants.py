@@ -11,6 +11,10 @@ ACTION_LEFT     =  [-1, 0, 0]
 ACTION_RIGHT    =  [1, 0, 0]
 ACTIONS         =  [ACTION_ACCEL, ACTION_LEFT, ACTION_RIGHT, ACTION_BRAKE]
 ACTION_SIZE     =  len(ACTIONS)
+ACTION_NAMES    =  ["Accel",
+                    "Left ",
+                    "Right",
+                    "Brake"]
 
 
 ##################
