@@ -14,9 +14,8 @@ if sys.platform.startswith('linux'):
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import math
-import threading
+import time
 import gym
-import multiprocessing
 import numpy as np
 from queue import Queue
 import argparse
@@ -86,6 +85,8 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
         global_ep_reward = episode_reward
     else:
         global_ep_reward = global_ep_reward * 0.99 + episode_reward * 0.01
+
+    elapsed_time = time.time() - start_time
     print(
         'Episode: ' + str(episode) +' | ' +
         'Moving Average Reward: ' + str(int(global_ep_reward)) + ' | ' +
@@ -93,10 +94,12 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
         'Loss: ' + str(int(total_loss / float(num_steps) * 1000) / 1000) + ' | ' +
         'Steps: ' + str(num_steps) + ' | ' +
         'Worker: ' + str(worker_idx) + ' | ' +
-        'Global steps: ' + str(global_steps)
+        'Global steps: ' + str(global_steps) + ' | ' +
+        'Time: ' + time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
     )
     csv_logger.writerow([str(episode), str(global_ep_reward), str(episode_reward), str(float(total_loss) / float(num_steps)),
-                         str(num_steps), str(global_steps), str(worker_idx)])
+                         str(num_steps), str(global_steps), str(worker_idx),
+                         time.strftime("%H:%M:%S", time.gmtime(elapsed_time))])
     result_queue.put(global_ep_reward)
     return global_ep_reward
 
@@ -216,7 +219,7 @@ class MasterAgent():
         self.log_file = open(save_dir+'training_log.csv', 'w', newline='')
         self.log_writer = csv.writer(self.log_file, delimiter='\t')
         self.log_writer.writerow(['episode', 'global_ep_reward', 'episode_reward', 'loss', 'num_steps', 'global_steps',
-                                  'worker_idx'])
+                                  'worker_idx', 'elapsed_time'])
         self.log_file.flush()
 
 
@@ -255,6 +258,7 @@ class MasterAgent():
 
 
     def train(self):
+
         if args.algorithm == 'random':
             random_agent = RandomAgent(self.game_name, args.max_eps)
             random_agent.run()
@@ -566,6 +570,7 @@ if __name__ == '__main__':
     # randomAgent = RandomAgent('CarRacing-v0', 4000)
     # randomAgent.run()
     if rank == 0:
+        start_time = time.time()
         master = MasterAgent()
         if args.train:
             master.train()

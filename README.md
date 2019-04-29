@@ -11,7 +11,7 @@ To set up the docker image it can be pulled from the Docker Hub repository or bu
 
 `cd A3C-CarRacingGym`
 
-`docker build --tag=a3c-carracing-gym .`
+`docker build --tag=kaland/a3c-carracing-gym .`
 # Running the image
 ## If bulit from GitHub 
 If the image was built from the github repo, inside the GitHub repo root folder (A3C-CarRacingGym) run:
