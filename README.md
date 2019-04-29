@@ -36,7 +36,7 @@ The container should start with a bash shell, if this is not the case, execute:
 # Training a model
 In order to run train the model enter the following commands to the bash shell of the container:
 
-`cd Scripts`
+`cd /tf/Scripts`
 
 `xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py --train --max-eps=20000` 
 
@@ -44,6 +44,8 @@ In order to run train the model enter the following commands to the bash shell o
 A trained model is included in this repository at: [Outputs/model_CarRacing-v0.h5](https://github.com/kaland313/A3C-CarRacingGym/blob/master/Outputs/model_CarRacing-v0.h5). 
 
 The docker container doesn't have a graphical output at the moment, thus only command line output is given, when running a model: 
+
+`cd /tf/Scripts`
 
 `xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py`
 
