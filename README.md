@@ -29,18 +29,18 @@ In order to run train the model enter the following commands to the bash shell o
 
 `xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py --train --max-eps=20000` 
 
-# Running the trained model,
+# Running the trained model
 A trained model is included in this repository at: [Outputs/model_CarRacing-v0.h5](https://github.com/kaland313/A3C-CarRacingGym/blob/master/Outputs/model_CarRacing-v0.h5). 
 
 The docker container doesn't have a graphical output at the moment, thus only command line output is given, when running a model: 
 
-`xvfb-run -a -s "-screen 0 640x480x24" python a3c_cartpole.py`
+`xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py`
 
 This will load a model from `Outputs/model_CarRacing-v0.h5` and run it for one episode (no eraly termination).
 
 Outside the docker container with an apropriately set up python environment the graphical output of the gym can be viewed by running:
 
-`python a3c_cartpole.py`
+`python a3c_carracing-v0.py`
 
 # Other code scripts for reference
 ## Code from oguzelibol/CarRacingA3C
