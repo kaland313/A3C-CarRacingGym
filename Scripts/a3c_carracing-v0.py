@@ -21,6 +21,7 @@ import numpy as np
 from queue import Queue
 import argparse
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 from skimage.color import rgb2gray
 
 import tensorflow as tf
@@ -274,7 +275,7 @@ class MasterAgent():
             random_agent = RandomAgent(self.game_name, args.max_eps)
             random_agent.run()
             return
-
+        # self.play(False)
         print("Starting training")
         # res_queue = Queue()
 
@@ -295,19 +296,23 @@ class MasterAgent():
         plt.savefig(os.path.join(self.save_dir, '{} Moving Average.png'.format(self.game_name)))
         plt.show()
 
-    def play(self):
+    def play(self, load_model=True, video_title = ""):
         model = self.global_model
-        model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
-        print('Loading model from: {}'.format(model_path))
-        model.load_weights(model_path)
+        if load_model:
+            model_path = os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name))
+            print('Loading model from: {}'.format(model_path))
+            model.load_weights(model_path)
 
         env = gym.make(self.game_name)
         iii = 0
+
+        fig2 = plt.figure()
         while iii < 1:
             iii += 1
             step_counter = 0
             reward_sum = 0
             max_reward = 0
+            ims = []
             done = False
             env_state = env.reset()
             state = processAndStackFrames(env_state)
@@ -325,19 +330,28 @@ class MasterAgent():
                     reward_sum += reward
                     if max_reward < reward_sum:
                         max_reward = reward_sum
+                    discounted_reward_sum = np.clip(reward, -1, 1) + 0.99 * reward_sum
 
                     # Early termination
-                    # if max_reward - reward_sum > 15:
-                    #     done = True
+                    if max_reward - reward_sum > 15:
+                        done = True
 
-                    # print("{}. Reward: {}, action: {}".format(step_counter, reward_sum, action))
-                    # print("Step: {:>4} | Reward: {:>4.1f} | ActionProbabilites: {} | ActionIdx: {}({}) | Steer,Gas,Break: {} "
-                    #       .format(step_counter, reward_sum, np.array(probs)[0], action, Constants.ACTION_NAMES[action],
-                    #               game_commands))
+                    print("Step: {:>4} | Reward: {:>4.1f} | ActionProbabilites: {} | ActionIdx: {}({}) | Steer,Gas,Break: {} "
+                          .format(step_counter, reward_sum, np.array(probs)[0], action, Constants.ACTION_NAMES[action],
+                                  game_commands))
+                    ims.append([plt.imshow(new_frame, animated=True),
+                                plt.text(3, 3, "V(s)={:0.3f}, R={:0.3f}".format(value[0, 0], discounted_reward_sum)),
+                                plt.title(video_title)
+                                ])
                     step_counter += 1
                 print("Final Reward: ", reward_sum, "Max reward: ", max_reward)
             except KeyboardInterrupt:
                 print("Received Keyboard Interrupt. Shutting down.")
+
+            im_ani = animation.ArtistAnimation(fig2, ims, blit=True)
+            video_path = os.path.join(self.save_dir, '{}.gif'.format(self.game_name))
+            im_ani.save(video_path, writer='pillow', fps=24)
+
         env.close()
 
     def receive_and_update_weights(self):
@@ -346,6 +360,8 @@ class MasterAgent():
 
         # Push gradients to global model
         self.opt.apply_gradients(zip(m_recv_packet['grads'], self.global_model.trainable_weights))
+
+        self.global_model.set_weights(self.global_model.get_weights())
 
         m_send_packet = {'weights': self.global_model.get_weights(),
                          'global_episode': self.global_episode + 1}
@@ -374,6 +390,9 @@ class MasterAgent():
                     os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
                 )
                 self.best_training_score = self.global_moving_average_reward
+
+            if self.global_episode % 500 == 0:
+                self.play(False, "Ep" + str(self.global_episode))
             self.global_episode += 1
 
 
@@ -472,9 +491,9 @@ class Worker:
                 # Early termination
                 if ep_reward > self.maxEpReward:
                     self.maxEpReward = ep_reward
-                if self.maxEpReward - ep_reward > 5:
-                    done = True
-                    early_terminated = True
+                # if self.maxEpReward - ep_reward > 5:
+                #     done = True
+                #     early_terminated = True
 
                 # clip reward
                 reward = np.clip(reward, -1, 1)
