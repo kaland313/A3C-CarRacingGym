@@ -15,6 +15,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 import math
 import time
+import signal
 import gym
 import numpy as np
 from queue import Queue
@@ -61,6 +62,8 @@ parser.add_argument('--gamma', default=0.99,
                     help='Discount factor of rewards.')
 parser.add_argument('--save-dir', default='../Outputs/', type=str,
                     help='Directory in which you desire to save the model.')
+parser.add_argument('--load-model', dest='load_model', action='store_true',
+                    help='Load a trained model for further training.')
 args = parser.parse_args()
 
 
@@ -69,7 +72,7 @@ args = parser.parse_args()
 #############################################################
 
 def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps,
-           csv_logger):
+           learning_rate, early_terminated, csv_logger):
     """Helper function to store score and print statistics.
 
     :param episode: Current episode
@@ -89,17 +92,19 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
     elapsed_time = time.time() - start_time
     print(
         'Episode: ' + str(episode) +' | ' +
-        'Moving Average Reward: ' + str(int(global_ep_reward)) + ' | ' +
+        'Moving Avg Reward: ' + str(int(global_ep_reward)) + ' | ' +
         'Episode Reward: ' +str(int(episode_reward)) + ' | ' +
         'Loss: ' + str(int(total_loss / float(num_steps) * 1000) / 1000) + ' | ' +
         'Steps: ' + str(num_steps) + ' | ' +
         'Worker: ' + str(worker_idx) + ' | ' +
+        'Learning Rate: ' + str(learning_rate) + ' | ' +
         'Global steps: ' + str(global_steps) + ' | ' +
-        'Time: ' + time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+        'Time: ' + time.strftime("%H:%M:%S", time.gmtime(elapsed_time))  + ' | ' +
+        'Early Term: ' + str(early_terminated)
     )
     csv_logger.writerow([str(episode), str(global_ep_reward), str(episode_reward), str(float(total_loss) / float(num_steps)),
-                         str(num_steps), str(global_steps), str(worker_idx),
-                         time.strftime("%H:%M:%S", time.gmtime(elapsed_time))])
+                         str(num_steps), str(global_steps), str(worker_idx), str(learning_rate),
+                         time.strftime("%H:%M:%S", time.gmtime(elapsed_time)), early_terminated])
     result_queue.put(global_ep_reward)
     return global_ep_reward
 
@@ -219,7 +224,7 @@ class MasterAgent():
         self.log_file = open(save_dir+'training_log.csv', 'w', newline='')
         self.log_writer = csv.writer(self.log_file, delimiter='\t')
         self.log_writer.writerow(['episode', 'global_ep_reward', 'episode_reward', 'loss', 'num_steps', 'global_steps',
-                                  'worker_idx', 'elapsed_time'])
+                                  'worker_idx', 'learning_rate', 'elapsed_time', 'early_terminated'])
         self.log_file.flush()
 
 
@@ -238,16 +243,6 @@ class MasterAgent():
 
         self.actions = Constants.ACTIONS
 
-        # Instantiate global network
-        self.global_model = ActorCriticModel(self.state_size, self.action_size)
-        # Evaluate global network with random input
-        self.global_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
-
-        # Instantiate optimizer
-        initial_learning_rate = log_uniform(Constants.ALPHA.LOW, Constants.ALPHA.HIGH, Constants.ALPHA.LOG_RATE)
-        self.opt = tf.train.RMSPropOptimizer(initial_learning_rate, decay=Constants.RMSP.ALPHA,
-                                             epsilon=Constants.RMSP.EPSILON, use_locking=True, centered=True)
-
         # Initialize global counters
         self.global_steps = 0
         self.global_episode = 0
@@ -256,6 +251,22 @@ class MasterAgent():
         self.result_queue = Queue()
         self.moving_average_rewards = []  # record episode reward to plot
 
+        # Instantiate global network
+        self.global_model = ActorCriticModel(self.state_size, self.action_size)
+        # Evaluate global network with random input
+        self.global_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
+        # Load a trained model
+        if args.load_model:
+            model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
+            print('Loading model from: {}'.format(model_path))
+            self.global_model.load_weights(model_path)
+            self.best_training_score = 250.0
+
+        # Instantiate optimizer
+        # initial_learning_rate = log_uniform(Constants.ALPHA.LOW, Constants.ALPHA.HIGH, Constants.ALPHA.LOG_RATE)
+        initial_learning_rate = 0.001
+        self.opt = tf.train.RMSPropOptimizer(initial_learning_rate, decay=Constants.RMSP.ALPHA,
+                                             epsilon=Constants.RMSP.EPSILON, use_locking=True, centered=True)
 
     def train(self):
 
@@ -285,38 +296,49 @@ class MasterAgent():
         plt.show()
 
     def play(self):
-        env = gym.make(self.game_name)
-        env_state = env.reset()
-        state = processAndStackFrames(env_state)
         model = self.global_model
         model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
         print('Loading model from: {}'.format(model_path))
         model.load_weights(model_path)
-        done = False
-        step_counter = 0
-        reward_sum = 0
 
-        try:
-            while not done:
-                env.render()
-                logits, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
-                probs = tf.nn.softmax(logits)
-                action = np.argmax(probs)
-                game_commands = self.actions[action]
-                # Action softening based on action certainty
-                game_commands = np.max(probs) * np.array(game_commands)
-                new_frame, reward, done, _ = env.step(game_commands)
-                state = processAndStackFrames(new_frame, state)
-                reward_sum += reward
-                # print("{}. Reward: {}, action: {}".format(step_counter, reward_sum, action))
-                print("Step: {:>4} | Reward: {:>4.1f} | ActionProbabilites: {} | ActionIdx: {}({}) | Steer,Gas,Break: {} "
-                      .format(step_counter, reward_sum, np.array(probs)[0], action, Constants.ACTION_NAMES[action],
-                              game_commands))
-                step_counter += 1
-        except KeyboardInterrupt:
-            print("Received Keyboard Interrupt. Shutting down.")
-        finally:
-            env.close()
+        env = gym.make(self.game_name)
+        iii = 0
+        while iii < 1:
+            iii += 1
+            step_counter = 0
+            reward_sum = 0
+            max_reward = 0
+            done = False
+            env_state = env.reset()
+            state = processAndStackFrames(env_state)
+            try:
+                while not done:
+                    env.render()
+                    logits, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
+                    probs = tf.nn.softmax(logits)
+                    action = np.argmax(probs)
+                    game_commands = self.actions[action]
+                    # Action softening based on action certainty
+                    game_commands = np.max(probs) * np.array(game_commands)
+                    new_frame, reward, done, _ = env.step(game_commands)
+                    state = processAndStackFrames(new_frame, state)
+                    reward_sum += reward
+                    if max_reward < reward_sum:
+                        max_reward = reward_sum
+
+                    # Early termination
+                    # if max_reward - reward_sum > 15:
+                    #     done = True
+
+                    # print("{}. Reward: {}, action: {}".format(step_counter, reward_sum, action))
+                    # print("Step: {:>4} | Reward: {:>4.1f} | ActionProbabilites: {} | ActionIdx: {}({}) | Steer,Gas,Break: {} "
+                    #       .format(step_counter, reward_sum, np.array(probs)[0], action, Constants.ACTION_NAMES[action],
+                    #               game_commands))
+                    step_counter += 1
+                print("Final Reward: ", reward_sum, "Max reward: ", max_reward)
+            except KeyboardInterrupt:
+                print("Received Keyboard Interrupt. Shutting down.")
+        env.close()
 
     def receive_and_update_weights(self):
 
@@ -340,6 +362,8 @@ class MasterAgent():
                                                        m_recv_packet['ep_loss'],
                                                        m_recv_packet['ep_steps'],
                                                        self.global_steps,
+                                                       self.opt._learning_rate,
+                                                       m_recv_packet['early_terminated'],
                                                        self.log_writer)
             self.log_file.flush()
             self.moving_average_rewards.append(self.global_moving_average_reward)
@@ -351,6 +375,14 @@ class MasterAgent():
                 )
                 self.best_training_score = self.global_moving_average_reward
             self.global_episode += 1
+
+
+
+    def save(self):
+        print("Saving best model to {}, moving awerage reward: {}".
+              format(self.save_dir, self.global_moving_average_reward))
+        self.global_model.save_weights(os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name))
+        )
 
 
 
@@ -412,6 +444,7 @@ class Worker:
             self.maxEpReward = 0.0
             ep_steps = 0
             self.ep_loss = 0
+            early_terminated = False
 
             time_count = 0
             done = False
@@ -441,6 +474,7 @@ class Worker:
                     self.maxEpReward = ep_reward
                 if self.maxEpReward - ep_reward > 5:
                     done = True
+                    early_terminated = True
 
                 # clip reward
                 reward = np.clip(reward, -1, 1)
@@ -461,7 +495,8 @@ class Worker:
                                    'ep_done': done,
                                    'ep_reward': ep_reward,
                                    'ep_loss': self.ep_loss,
-                                   'ep_steps': ep_steps
+                                   'ep_steps': ep_steps,
+                                   'early_terminated': early_terminated,
                                    }
                     # Send episode data the master process
                     comm.send(send_packet, dest=0)
@@ -572,6 +607,12 @@ if __name__ == '__main__':
     if rank == 0:
         start_time = time.time()
         master = MasterAgent()
+        # Install Ctrl+C signal handler
+        def signal_handler(sig, frame):
+            print('CTRL+C was pressed, attempting to stop and save.')
+            master.save()
+
+        signal.signal(signal.SIGINT, signal_handler)
         if args.train:
             master.train()
         else:
