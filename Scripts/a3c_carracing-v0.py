@@ -59,8 +59,6 @@ parser.add_argument('--update-freq', default=20, type=int,
                     help='How often to update the global model.')
 parser.add_argument('--max-eps', default=50000, type=int,
                     help='Global maximum number of episodes to run.')
-parser.add_argument('--gamma', default=0.99,
-                    help='Discount factor of rewards.')
 parser.add_argument('--save-dir', default='../Outputs/', type=str,
                     help='Directory in which you desire to save the model.')
 parser.add_argument('--load-model', dest='load_model', action='store_true',
@@ -73,7 +71,7 @@ args = parser.parse_args()
 #############################################################
 
 def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps,
-           learning_rate, early_terminated, csv_logger):
+           learning_rate, early_terminated, grad_norm, saved_value, csv_logger):
     """Helper function to store score and print statistics.
 
     :param episode: Current episode
@@ -96,6 +94,8 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
         'Moving Avg Reward: ' + str(int(global_ep_reward)) + ' | ' +
         'Episode Reward: ' +str(int(episode_reward)) + ' | ' +
         'Loss: ' + str(int(total_loss / float(num_steps) * 1000) / 1000) + ' | ' +
+        'Grad Norm: {:0.3f}'.format(float(grad_norm)) + ' | ' +
+        'Value: {:0.3f}'.format(float(saved_value)) + ' | ' +
         'Steps: ' + str(num_steps) + ' | ' +
         'Worker: ' + str(worker_idx) + ' | ' +
         'Learning Rate: ' + str(learning_rate) + ' | ' +
@@ -105,7 +105,8 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
     )
     csv_logger.writerow([str(episode), str(global_ep_reward), str(episode_reward), str(float(total_loss) / float(num_steps)),
                          str(num_steps), str(global_steps), str(worker_idx), str(learning_rate),
-                         time.strftime("%H:%M:%S", time.gmtime(elapsed_time)), early_terminated])
+                         time.strftime("%H:%M:%S", time.gmtime(elapsed_time)), str(early_terminated), str(grad_norm),
+                         str(saved_value)])
     result_queue.put(global_ep_reward)
     return global_ep_reward
 
@@ -225,7 +226,7 @@ class MasterAgent():
         self.log_file = open(save_dir+'training_log.csv', 'w', newline='')
         self.log_writer = csv.writer(self.log_file, delimiter='\t')
         self.log_writer.writerow(['episode', 'global_ep_reward', 'episode_reward', 'loss', 'num_steps', 'global_steps',
-                                  'worker_idx', 'learning_rate', 'elapsed_time', 'early_terminated'])
+                                  'worker_idx', 'learning_rate', 'elapsed_time', 'early_terminated', 'grad_norm', 'saved_value'])
         self.log_file.flush()
 
 
@@ -279,8 +280,6 @@ class MasterAgent():
         print("Starting training")
         # res_queue = Queue()
 
-        mpi_fork(Constants.NUM_THREADS)
-
         m_send_packet = {'weights': self.global_model.get_weights()}
         # Broadcasting weights to workers
         comm.bcast(m_send_packet, root=0)
@@ -330,7 +329,7 @@ class MasterAgent():
                     reward_sum += reward
                     if max_reward < reward_sum:
                         max_reward = reward_sum
-                    discounted_reward_sum = np.clip(reward, -1, 1) + 0.99 * reward_sum
+                    discounted_reward_sum = np.clip(reward, -1, 1) + Constants.DISCOUNT * reward_sum
 
                     # Early termination
                     if max_reward - reward_sum > 15:
@@ -380,6 +379,8 @@ class MasterAgent():
                                                        self.global_steps,
                                                        self.opt._learning_rate,
                                                        m_recv_packet['early_terminated'],
+                                                       m_recv_packet['grad_norm'],
+                                                       m_recv_packet['saved_value'],
                                                        self.log_writer)
             self.log_file.flush()
             self.moving_average_rewards.append(self.global_moving_average_reward)
@@ -468,7 +469,7 @@ class Worker:
             time_count = 0
             done = False
             while not done:
-                logits, _ = self.local_model(
+                logits, value = self.local_model(
                     tf.convert_to_tensor(current_state[None, :],
                                          dtype=tf.float32))
                 probs = tf.nn.softmax(logits)
@@ -500,21 +501,29 @@ class Worker:
 
                 mem.store(current_state, action, reward)
 
+                if ep_steps == 0:
+                    saved_value = value
+
                 if time_count == args.update_freq or done:
                     # Calculate gradient wrt to local model. We do so by tracking the
                     # variables involved in computing the loss by using tf.GradientTape
                     with tf.GradientTape() as tape:
-                        total_loss = self.compute_loss(done, new_state, mem, args.gamma)
+                        total_loss = self.compute_loss(done, new_state, mem, Constants.DISCOUNT)
                     self.ep_loss += total_loss
                     # Calculate local gradients
                     grads = tape.gradient(total_loss, self.local_model.trainable_weights)
 
+                    # Gradient clipping
+                    clipped_grads, global_norm = tf.clip_by_global_norm(grads, Constants.GRADIENT_NORM_CLIP)
+
                     send_packet = {'worker_rank': rank,
-                                   'grads': grads,
+                                   'grads': clipped_grads,
+                                   'grad_norm': global_norm,
                                    'ep_done': done,
                                    'ep_reward': ep_reward,
                                    'ep_loss': self.ep_loss,
                                    'ep_steps': ep_steps,
+                                   'saved_value': saved_value,
                                    'early_terminated': early_terminated,
                                    }
                     # Send episode data the master process
@@ -607,7 +616,6 @@ def processAndStackFrames(new_frame, current_state=None):
     It contains the environment's state from the previous 4 steps.
     """
     gray_frame = rgb2gray(new_frame)
-
     if(current_state is not None):
         gray_frame = np.expand_dims(gray_frame, axis=2)
         new_state = np.append(current_state[:, :, 1:], gray_frame, axis=2)
@@ -621,9 +629,13 @@ def processAndStackFrames(new_frame, current_state=None):
 #############################################################
 if __name__ == '__main__':
     print(args)
+
     # randomAgent = RandomAgent('CarRacing-v0', 4000)
     # randomAgent.run()
     if rank == 0:
+        print("Starting mpi processes")
+        mpi_fork(Constants.NUM_THREADS)
+
         start_time = time.time()
         master = MasterAgent()
         # Install Ctrl+C signal handler
