@@ -4,6 +4,7 @@ import os
 # After some Qt import, it's too late
 import ctypes
 import sys
+
 if sys.platform.startswith('linux'):
     try:
         x11 = ctypes.cdll.LoadLibrary('libX11.so')
@@ -55,8 +56,6 @@ parser.add_argument('--train', dest='train', action='store_true',
                     help='Train our model.')
 parser.add_argument('--lr', default=0.001,
                     help='Learning rate for the shared optimizer.')
-parser.add_argument('--update-freq', default=20, type=int,
-                    help='How often to update the global model.')
 parser.add_argument('--max-eps', default=50000, type=int,
                     help='Global maximum number of episodes to run.')
 parser.add_argument('--save-dir', default='../Outputs/', type=str,
@@ -90,9 +89,9 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
 
     elapsed_time = time.time() - start_time
     print(
-        'Episode: ' + str(episode) +' | ' +
+        'Episode: ' + str(episode) + ' | ' +
         'Moving Avg Reward: ' + str(int(global_ep_reward)) + ' | ' +
-        'Episode Reward: ' +str(int(episode_reward)) + ' | ' +
+        'Episode Reward: ' + str(int(episode_reward)) + ' | ' +
         'Loss: ' + str(int(total_loss / float(num_steps) * 1000) / 1000) + ' | ' +
         'Grad Norm: {:0.3f}'.format(float(grad_norm)) + ' | ' +
         'Value: {:0.3f}'.format(float(saved_value)) + ' | ' +
@@ -100,29 +99,32 @@ def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, 
         'Worker: ' + str(worker_idx) + ' | ' +
         'Learning Rate: ' + str(learning_rate) + ' | ' +
         'Global steps: ' + str(global_steps) + ' | ' +
-        'Time: ' + time.strftime("%H:%M:%S", time.gmtime(elapsed_time))  + ' | ' +
+        'Time: ' + time.strftime("%H:%M:%S", time.gmtime(elapsed_time)) + ' | ' +
         'Early Term: ' + str(early_terminated)
     )
-    csv_logger.writerow([str(episode), str(global_ep_reward), str(episode_reward), str(float(total_loss) / float(num_steps)),
-                         str(num_steps), str(global_steps), str(worker_idx), str(learning_rate),
-                         time.strftime("%H:%M:%S", time.gmtime(elapsed_time)), str(early_terminated), str(grad_norm),
-                         str(saved_value)])
+    csv_logger.writerow(
+        [str(episode), str(global_ep_reward), str(episode_reward), str(float(total_loss) / float(num_steps)),
+         str(num_steps), str(global_steps), str(worker_idx), str(learning_rate),
+         time.strftime("%H:%M:%S", time.gmtime(elapsed_time)), str(early_terminated), str(float(grad_norm)),
+         str(float(saved_value))])
     result_queue.put(global_ep_reward)
     return global_ep_reward
+
 
 # log uniform
 def log_uniform(lo, hi, rate):
     log_lo = math.log(lo)
     log_hi = math.log(hi)
-    v = log_lo * (1-rate) + log_hi * rate
+    v = log_lo * (1 - rate) + log_hi * rate
     return math.exp(v)
+
 
 def mpi_fork(n):
     """Re-launches the current script with workers
     Returns "parent" for original parent, "child" for MPI children
     (from https://github.com/garymcintire/mpi_util/)
     """
-    if n<=1:
+    if n <= 1:
         return "child"
     if os.getenv("IN_MPI") is None:
         env = os.environ.copy()
@@ -157,6 +159,7 @@ class RandomAgent:
     :param env_name: Name of the environment to be played
     :param max_eps: Maximum number of episodes to run agent for.
     """
+
     def __init__(self, env_name, max_eps):
         self.env = gym.make(env_name)
         self.max_episodes = max_eps
@@ -187,6 +190,7 @@ class RandomAgent:
         final_avg = reward_avg / float(self.max_episodes)
         print("Average score across {} episodes: {}".format(self.max_episodes, final_avg))
         return final_avg
+
 
 #############################################################
 # Actor-critic model definition
@@ -223,12 +227,12 @@ class MasterAgent():
         self.save_dir = save_dir
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        self.log_file = open(save_dir+'training_log.csv', 'w', newline='')
+        self.log_file = open(save_dir + 'training_log.csv', 'w', newline='')
         self.log_writer = csv.writer(self.log_file, delimiter='\t')
         self.log_writer.writerow(['episode', 'global_ep_reward', 'episode_reward', 'loss', 'num_steps', 'global_steps',
-                                  'worker_idx', 'learning_rate', 'elapsed_time', 'early_terminated', 'grad_norm', 'saved_value'])
+                                  'worker_idx', 'learning_rate', 'elapsed_time', 'early_terminated', 'grad_norm',
+                                  'saved_value'])
         self.log_file.flush()
-
 
         # Get input and output parameters and instantiate global network
         env = gym.make(self.game_name)
@@ -238,9 +242,9 @@ class MasterAgent():
         # The game state converted to grayscale and Constants.IMAGE_DEPTH=4 are stacked to form the input to the network
         # Thus the original 3 sized 3rd axis (rgb) should have a size of 4
         # Note: + operator on touples acts as merge
-        self.state_size = env.observation_space.shape[0:2]+(Constants.IMAGE_DEPTH,)
+        self.state_size = env.observation_space.shape[0:2] + (Constants.IMAGE_DEPTH,)
         self.action_size = Constants.ACTION_SIZE
-        print("Network input space shape: ",  self.state_size)
+        print("Network input space shape: ", self.state_size)
         print("Network output ", Constants.ACTION_SIZE)
 
         self.actions = Constants.ACTIONS
@@ -257,18 +261,11 @@ class MasterAgent():
         self.global_model = ActorCriticModel(self.state_size, self.action_size)
         # Evaluate global network with random input
         self.global_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
-        # Load a trained model
-        if args.load_model:
-            model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
-            print('Loading model from: {}'.format(model_path))
-            self.global_model.load_weights(model_path)
-            self.best_training_score = 250.0
 
         # Instantiate optimizer
         # initial_learning_rate = log_uniform(Constants.ALPHA.LOW, Constants.ALPHA.HIGH, Constants.ALPHA.LOG_RATE)
-        initial_learning_rate = 0.001
-        self.opt = tf.train.RMSPropOptimizer(initial_learning_rate, decay=Constants.RMSP.ALPHA,
-                                             epsilon=Constants.RMSP.EPSILON, use_locking=True, centered=True)
+        initial_learning_rate = 0.0001
+        self.opt = tf.train.RMSPropOptimizer(initial_learning_rate, use_locking=True, centered=False)
 
     def train(self):
 
@@ -276,9 +273,17 @@ class MasterAgent():
             random_agent = RandomAgent(self.game_name, args.max_eps)
             random_agent.run()
             return
-        # self.play(False)
+
         print("Starting training")
         # res_queue = Queue()
+
+        # Load a trained model
+        if args.load_model:
+            model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
+            print('Loading model from: {}'.format(model_path))
+            self.global_model.load_weights(model_path)
+            self.best_training_score = 250.0
+            self.play(False, "LoadedModel")
 
         m_send_packet = {'weights': self.global_model.get_weights()}
         # Broadcasting weights to workers
@@ -295,7 +300,7 @@ class MasterAgent():
         plt.savefig(os.path.join(self.save_dir, '{} Moving Average.png'.format(self.game_name)))
         plt.show()
 
-    def play(self, load_model=True, video_title = ""):
+    def play(self, load_model=True, video_title=""):
         model = self.global_model
         if load_model:
             model_path = os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name))
@@ -348,7 +353,7 @@ class MasterAgent():
                 print("Received Keyboard Interrupt. Shutting down.")
 
             im_ani = animation.ArtistAnimation(fig2, ims, blit=True)
-            video_path = os.path.join(self.save_dir, '{}.gif'.format(self.game_name))
+            video_path = os.path.join(self.save_dir, '{}_{}.gif'.format(self.game_name, video_title))
             im_ani.save(video_path, writer='pillow', fps=24)
 
         env.close()
@@ -359,8 +364,6 @@ class MasterAgent():
 
         # Push gradients to global model
         self.opt.apply_gradients(zip(m_recv_packet['grads'], self.global_model.trainable_weights))
-
-        self.global_model.set_weights(self.global_model.get_weights())
 
         m_send_packet = {'weights': self.global_model.get_weights(),
                          'global_episode': self.global_episode + 1}
@@ -386,7 +389,8 @@ class MasterAgent():
             self.moving_average_rewards.append(self.global_moving_average_reward)
 
             if self.global_moving_average_reward > self.best_training_score:
-                print("Saving best model to {}, moving awerage reward: {}".format(self.save_dir, self.global_moving_average_reward))
+                print("Saving best model to {}, moving awerage reward: {}".format(self.save_dir,
+                                                                                  self.global_moving_average_reward))
                 self.global_model.save_weights(
                     os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
                 )
@@ -396,14 +400,11 @@ class MasterAgent():
                 self.play(False, "Ep" + str(self.global_episode))
             self.global_episode += 1
 
-
-
     def save(self):
         print("Saving best model to {}, moving awerage reward: {}".
               format(self.save_dir, self.global_moving_average_reward))
         self.global_model.save_weights(os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name))
-        )
-
+                                       )
 
 
 #############################################################
@@ -433,7 +434,7 @@ class Worker:
     def __init__(self, ):
         self.game_name = Constants.GAME
         self.env = gym.make(self.game_name)
-        self.state_size = self.env.observation_space.shape[0:2]+(Constants.IMAGE_DEPTH,)
+        self.state_size = self.env.observation_space.shape[0:2] + (Constants.IMAGE_DEPTH,)
         self.action_size = Constants.ACTION_SIZE
         self.actions = Constants.ACTIONS
         self.local_model = ActorCriticModel(self.state_size, self.action_size)
@@ -441,18 +442,19 @@ class Worker:
         self.maxEpReward = 0.0
         self.global_episode = 0
 
+    def run(self):
+        print("Starting worker", rank)
         # Receive global weights from master
         recv_packet = comm.bcast(None, root=0)
         # Initialize local model with new weights
         self.local_model.set_weights(recv_packet['weights'])
+        print("Weights Received from master", rank)
 
-    def run(self):
-        print("Starting worker", rank)
         total_step = 1
         mem = Memory()
         while self.global_episode < args.max_eps:
             # try:
-            env_state = self.env.reset() #Returns: observation (object): the initial observation of the env
+            env_state = self.env.reset()  # Returns: observation (object): the initial observation of the env
             # self.env.render()
             # except:
             #     print("Exception while env.reset()")
@@ -481,7 +483,7 @@ class Worker:
                 game_commands = self.actions[action]
 
                 # Action softening based on action certainty
-                game_commands = probs.numpy()[0, action]*np.array(game_commands)
+                game_commands = probs.numpy()[0, action] * np.array(game_commands)
 
                 new_state, reward, done, info = self.env.step(game_commands)
                 new_state = processAndStackFrames(new_state, current_state)
@@ -504,7 +506,7 @@ class Worker:
                 if ep_steps == 0:
                     saved_value = value
 
-                if time_count == args.update_freq or done:
+                if time_count == Constants.LOCAL_T_MAX or done:
                     # Calculate gradient wrt to local model. We do so by tracking the
                     # variables involved in computing the loss by using tf.GradientTape
                     with tf.GradientTape() as tape:
@@ -549,9 +551,8 @@ class Worker:
         if done:
             reward_sum = 0.  # terminal
         else:
-            reward_sum = self.local_model(
-                tf.convert_to_tensor(new_state[None, :],
-                                     dtype=tf.float32))[-1].numpy()[0]
+            _, reward_sum = self.local_model(tf.convert_to_tensor(new_state[None, :], dtype=tf.float32))
+            reward_sum = float(reward_sum)
 
         # Get discounted rewards
         discounted_rewards = []
@@ -560,26 +561,35 @@ class Worker:
             discounted_rewards.append(reward_sum)
         discounted_rewards.reverse()
 
-        logits, values = self.local_model(
-            tf.convert_to_tensor(np.stack(memory.states),
-                                 dtype=tf.float32))
+        logits, values = self.local_model(tf.convert_to_tensor(np.stack(memory.states), dtype=tf.float32))
 
-        # Get our advantages
-        advantage = tf.convert_to_tensor(np.array(discounted_rewards)[:, None],
-                                         dtype=tf.float32) - values
-        # Value loss
-        value_loss = advantage ** 2
+        # Calculate advantages
+        advantage = tf.convert_to_tensor(np.array(discounted_rewards)[:, None], dtype=tf.float32) - values
 
-        # Calculate our policy loss
+        # Calculate value loss
+        value_loss = tf.keras.losses.mean_squared_error(discounted_rewards, values)
+
+        # Calculate policy loss
         actions_one_hot = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
-
         policy = tf.nn.softmax(logits)
         entropy = tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
-
-        policy_loss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=actions_one_hot,
-                                                                 logits=logits)
+        policy_loss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=actions_one_hot, logits=logits)
         policy_loss *= tf.stop_gradient(advantage)
         policy_loss -= 0.01 * entropy
+
+        # # sparse categorical CE loss obj that supports sample_weight arg on call()
+        # # from_logits argument ensures transformation into normalized probabilities
+        # weighted_sparse_ce = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+        # # policy loss is defined by policy gradients, weighted by advantages
+        # # note: we only calculate the loss on the actions we've actually taken
+        # actions = tf.cast(memory.actions, tf.int32)
+        # policy_loss = weighted_sparse_ce(actions, logits, sample_weight=advantage)
+        # # entropy loss can be calculated via CE over itself
+        # entropy_ce = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+        # entropy_loss = entropy_ce(logits, logits)
+        # # here signs are flipped because optimizer minimizes
+        # policy_loss = policy_loss - 0.01 * entropy_loss
+
         total_loss = tf.reduce_mean((0.5 * value_loss + policy_loss))
         return total_loss
 
@@ -616,7 +626,7 @@ def processAndStackFrames(new_frame, current_state=None):
     It contains the environment's state from the previous 4 steps.
     """
     gray_frame = rgb2gray(new_frame)
-    if(current_state is not None):
+    if (current_state is not None):
         gray_frame = np.expand_dims(gray_frame, axis=2)
         new_state = np.append(current_state[:, :, 1:], gray_frame, axis=2)
     else:
@@ -638,10 +648,13 @@ if __name__ == '__main__':
 
         start_time = time.time()
         master = MasterAgent()
+
+
         # Install Ctrl+C signal handler
         def signal_handler(sig, frame):
             print('CTRL+C was pressed, attempting to stop and save.')
             master.save()
+
 
         signal.signal(signal.SIGINT, signal_handler)
         if args.train:
