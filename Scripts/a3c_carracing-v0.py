@@ -270,8 +270,8 @@ class MasterAgent():
 
         # Instantiate optimizer
         # initial_learning_rate = log_uniform(Constants.ALPHA.LOW, Constants.ALPHA.HIGH, Constants.ALPHA.LOG_RATE)
-        initial_learning_rate = 0.0001
-        self.opt = tf.train.RMSPropOptimizer(initial_learning_rate, use_locking=True, centered=False)
+        self.initial_learning_rate = Constants.INITIAL_LEARNING_RATE
+        self.opt = tf.train.RMSPropOptimizer(self.initial_learning_rate, use_locking=True, centered=False)
 
     def train(self):
 
@@ -285,10 +285,7 @@ class MasterAgent():
 
         # Load a trained model
         if args.load_model:
-            model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
-            print('Loading model from: {}'.format(model_path))
-            self.global_model.load_weights(model_path, by_name=True)
-            self.best_training_score = 475.0
+            self.load_model()
             self.play(False, "LoadedModel")
 
         m_send_packet = {'weights': self.global_model.get_weights()}
@@ -307,11 +304,8 @@ class MasterAgent():
         plt.show()
 
     def play(self, load_model=True, video_title=""):
+        self.load_model()
         model = self.global_model
-        if load_model:
-            model_path = os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name))
-            print('Loading model from: {}'.format(model_path))
-            model.load_weights(model_path)
 
         env = gym.make(self.game_name)
         iii = 0
@@ -371,10 +365,18 @@ class MasterAgent():
         # Push gradients to global model
         self.opt.apply_gradients(zip(m_recv_packet['grads'], self.global_model.trainable_weights))
 
+        # Reload the best model if the global_moving_average_reward collapsed
+        if self.global_episode > 100 and self.global_moving_average_reward < (self.best_training_score - 375.0):
+            self.load_model()
+            print("Reloaded model, with best training score: ", self.best_training_score)
+            self.log_writer.writerow(["Reloaded model, with best training score: " + str(self.best_training_score)])
+
         m_send_packet = {'weights': self.global_model.get_weights(),
                          'global_episode': self.global_episode + 1}
 
         comm.send(m_send_packet, dest=m_recv_packet['worker_rank'])
+
+        self.opt._learning_rate = self._anneal_learning_rate(self.global_episode)
 
         if m_recv_packet['ep_done']:  # done and print information
             self.global_steps += m_recv_packet['ep_steps']
@@ -409,8 +411,17 @@ class MasterAgent():
     def save(self):
         print("Saving best model to {}, moving awerage reward: {}".
               format(self.save_dir, self.global_moving_average_reward))
-        self.global_model.save_weights(os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name))
-                                       )
+        self.global_model.save_weights(os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name)))
+
+    def load_model(self):
+        model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
+        print('Loading model from: {}'.format(model_path))
+        self.global_model.load_weights(model_path, by_name=True)
+        if int(self.best_training_score) == 0:
+            self.best_training_score = 475.0 #The latest best score
+
+    def _anneal_learning_rate(self, global_ep):
+        return max(0, self.initial_learning_rate * (args.max_eps - global_ep) / args.max_eps)
 
 
 #############################################################
@@ -579,7 +590,7 @@ class Worker:
         # Calculate policy loss
         actions_one_hot = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
         policy = tf.nn.softmax(logits)
-        entropy = -tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
+        entropy = tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
         policy_loss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=actions_one_hot, logits=logits)
         policy_loss *= tf.stop_gradient(advantage)
         policy_loss -= 0.01 * entropy

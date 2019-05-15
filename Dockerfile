@@ -29,7 +29,6 @@ RUN echo "root:init" | chpasswd
 
 WORKDIR /tf
 
-# Add entrypoint.sh and other available files to image
-# COPY ./DockerSetup/entrypoint.sh /tf
+CMD service ssh start && jupyter notebook --allow-root
 
 CMD bash

@@ -23,6 +23,7 @@ ACTION_NAMES    =  ["Accel",
 USE_GPU               =  False
 LOCAL_T_MAX           =  5         				# repeat step size
 NUM_THREADS           =  8         				# Number of parallel threads
+INITIAL_LEARNING_RATE =  1e-4
 SAVE_INTERVAL         =  120					# in seconds
 SAVE_FILENAME         = 'scores-saved.json'
 SAVE_SCORE_THRESHOLD  =  500
