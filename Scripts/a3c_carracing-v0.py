@@ -68,6 +68,12 @@ args = parser.parse_args()
 #############################################################
 # Helper functions
 #############################################################
+# if rank == 1:
+if not os.path.exists(args.save_dir):
+    os.makedirs(args.save_dir)
+summary_writer = tf.contrib.summary.create_file_writer(os.path.join(args.save_dir, 'summaries'), flush_millis=10000)
+summary_writer.as_default()
+tf.contrib.summary.always_record_summaries()
 
 def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps,
            learning_rate, early_terminated, grad_norm, saved_value, csv_logger):
@@ -281,8 +287,8 @@ class MasterAgent():
         if args.load_model:
             model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
             print('Loading model from: {}'.format(model_path))
-            self.global_model.load_weights(model_path)
-            self.best_training_score = 250.0
+            self.global_model.load_weights(model_path, by_name=True)
+            self.best_training_score = 475.0
             self.play(False, "LoadedModel")
 
         m_send_packet = {'weights': self.global_model.get_weights()}
@@ -549,7 +555,8 @@ class Worker:
 
     def compute_loss(self, done, new_state, memory, gamma=0.99):
         if done:
-            reward_sum = 0.  # terminal
+            # terminal thus we can't expect any more reward form the preceeding states as there are none
+            reward_sum = 0.
         else:
             _, reward_sum = self.local_model(tf.convert_to_tensor(new_state[None, :], dtype=tf.float32))
             reward_sum = float(reward_sum)
@@ -572,25 +579,32 @@ class Worker:
         # Calculate policy loss
         actions_one_hot = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
         policy = tf.nn.softmax(logits)
-        entropy = tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
+        entropy = -tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
         policy_loss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=actions_one_hot, logits=logits)
         policy_loss *= tf.stop_gradient(advantage)
         policy_loss -= 0.01 * entropy
-
-        # # sparse categorical CE loss obj that supports sample_weight arg on call()
-        # # from_logits argument ensures transformation into normalized probabilities
-        # weighted_sparse_ce = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-        # # policy loss is defined by policy gradients, weighted by advantages
-        # # note: we only calculate the loss on the actions we've actually taken
-        # actions = tf.cast(memory.actions, tf.int32)
-        # policy_loss = weighted_sparse_ce(actions, logits, sample_weight=advantage)
-        # # entropy loss can be calculated via CE over itself
-        # entropy_ce = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-        # entropy_loss = entropy_ce(logits, logits)
-        # # here signs are flipped because optimizer minimizes
-        # policy_loss = policy_loss - 0.01 * entropy_loss
-
         total_loss = tf.reduce_mean((0.5 * value_loss + policy_loss))
+
+        # Calculate policy loss
+        # actions_one_hot = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
+        # log_prob_tf = tf.nn.log_softmax(logits)
+        # prob_tf = tf.nn.softmax(logits)
+        # pi_loss = - tf.reduce_sum(tf.reduce_sum(log_prob_tf * actions_one_hot, [1]) * advantage)
+        # value_loss = 0.5 * tf.reduce_sum(tf.square(values - discounted_rewards))
+        # entropy = - tf.reduce_sum(prob_tf * log_prob_tf)
+        # total_loss = pi_loss + 0.5 * value_loss - entropy * 0.01
+
+        # Calculate policy loss
+        # probs = tf.nn.softmax(logits)
+        # action = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
+        # # avoid NaN with clipping when value in pi becomes zero
+        # log_pi = tf.log(tf.clip_by_value(probs, 1e-20, 1.0))
+        # # policy entropy
+        # entropy = -tf.reduce_sum(probs * log_pi, reduction_indices=1)
+        # td = discounted_rewards - values
+        # # policy loss
+        # policy_loss = - tf.reduce_sum(tf.reduce_sum(tf.multiply(log_pi, action), reduction_indices=1) * td
+        #                               + entropy * Constants.ENTROPY_BETA)
         return total_loss
 
         ##############################################################
