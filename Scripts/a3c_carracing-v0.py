@@ -71,9 +71,14 @@ args = parser.parse_args()
 # if rank == 1:
 if not os.path.exists(args.save_dir):
     os.makedirs(args.save_dir)
-summary_writer = tf.contrib.summary.create_file_writer(os.path.join(args.save_dir, 'summaries'), flush_millis=10000)
-summary_writer.as_default()
-tf.contrib.summary.always_record_summaries()
+
+
+graph = tf.Graph()
+with graph.as_default():
+    global_step = tf.train.create_global_step()
+    summar_writer = tf.contrib.summary.create_file_writer(os.path.join(args.save_dir, 'summaries'), flush_millis=10000)
+    with summar_writer.as_default():
+        tf.contrib.summary.always_record_summaries()
 
 def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps,
            learning_rate, early_terminated, grad_norm, saved_value, csv_logger):
@@ -332,6 +337,11 @@ class MasterAgent():
                     game_commands = np.max(probs) * np.array(game_commands)
                     new_frame, reward, done, _ = env.step(game_commands)
                     state = processAndStackFrames(new_frame, state)
+                    # if step_counter > 80:
+                    #     plt.imshow(rgb2gray(new_frame),cmap='gray')
+                    #     plt.axis('off')
+                    #     plt.show()
+                    #     time.sleep(60)
                     reward_sum += reward
                     if max_reward < reward_sum:
                         max_reward = reward_sum
@@ -358,6 +368,24 @@ class MasterAgent():
             im_ani.save(video_path, writer='pillow', fps=24)
 
         env.close()
+
+    def play_multi_worker(self):
+        rewards = []
+        max_rewards = []
+        iii = 0
+        while iii < 100:
+            iii += 1
+            m_recv_packet = comm.recv(source=MPI.ANY_SOURCE)
+            rewards.append(m_recv_packet['reward_sum'])
+            max_rewards.append(m_recv_packet['max_reward'])
+            print("Episode", iii, "Final episode reward", m_recv_packet['reward_sum'],
+                  "Max episode reward", m_recv_packet['max_reward'])
+        print("Final episode reward ")
+        print(rewards)
+        print("Average ", np.mean(rewards), "+-", np.std(rewards))
+        print("Max episode reward ")
+        print(rewards)
+        print("Average ", np.mean(max_rewards), "+-", np.std(max_rewards))
 
     def receive_and_update_weights(self):
 
@@ -559,6 +587,9 @@ class Worker:
                     # Update local model with new weights
                     self.local_model.set_weights(new_weights)
 
+                    with tf.contrib.summary.record_summaries_every_n_global_steps(1):
+                        tf.contrib.summary.scalar('ep_loss', self.ep_loss)
+
                     mem.clear()
                     time_count = 0
 
@@ -619,6 +650,9 @@ class Worker:
         # # policy loss
         # policy_loss = - tf.reduce_sum(tf.reduce_sum(tf.multiply(log_pi, action), reduction_indices=1) * td
         #                               + entropy * Constants.ENTROPY_BETA)
+        print("Losses: T{:> 05.3} | P{:> 05.3} | V{:> 05.3} | E{:> 05.3}"
+              .format(float(total_loss), float(tf.reduce_mean(policy_loss)), float(tf.reduce_mean(0.5 * value_loss)), float(tf.reduce_mean(entropy))))
+
         return total_loss
 
         ##############################################################
@@ -643,6 +677,55 @@ class Worker:
         #
         # # gradienet of policy and value are summed up
         # return policy_loss + value_loss
+
+    def play(self, load_model=True, video_title=""):
+        model = self.local_model
+        if load_model:
+            model_path = os.path.join(args.save_dir, 'model_manual_{}.h5'.format(self.game_name))
+            print('Loading model from: {}'.format(model_path))
+            model.load_weights(model_path)
+
+        env = gym.make(self.game_name)
+        iii = 0
+
+        while iii < 100/Constants.NUM_THREADS+1:
+            iii += 1
+            step_counter = 0
+            reward_sum = 0
+            max_reward = 0
+            done = False
+            env_state = env.reset()
+            state = processAndStackFrames(env_state)
+            try:
+                while not done:
+                    env.render()
+                    logits, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
+                    probs = tf.nn.softmax(logits)
+                    action = np.argmax(probs)
+                    game_commands = self.actions[action]
+                    # Action softening based on action certainty
+                    game_commands = np.max(probs) * np.array(game_commands)
+                    new_frame, reward, done, _ = env.step(game_commands)
+                    state = processAndStackFrames(new_frame, state)
+
+                    reward_sum += reward
+                    if max_reward < reward_sum:
+                        max_reward = reward_sum
+
+                    # # Early termination
+                    # if max_reward - reward_sum > 15:
+                    #     done = True
+
+                    step_counter += 1
+
+                # Send episode data the master process
+                send_packet = {'reward_sum': reward_sum,
+                               'max_reward': max_reward}
+                comm.send(send_packet, dest=0)
+                # print("Final Reward: ", reward_sum, "Max reward: ", max_reward)
+            except KeyboardInterrupt:
+                print("Received Keyboard Interrupt. Shutting down.")
+        env.close()
 
 
 def processAndStackFrames(new_frame, current_state=None):
@@ -688,8 +771,12 @@ if __name__ == '__main__':
         if args.train:
             master.train()
         else:
-            master.play()
+            master.play_multi_worker()
     else:
         worker = Worker()
-        worker.run()
+        if args.train:
+            worker.run()
+        else:
+            worker.play()
+
 
