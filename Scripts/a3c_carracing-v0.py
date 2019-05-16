@@ -265,7 +265,7 @@ class MasterAgent():
 
         # Instantiate global network
         self.global_model = ActorCriticModel(self.state_size, self.action_size)
-        # Evaluate global network with random input
+        # To initialize the layers we evaluate global network with a random input
         self.global_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
 
         # Instantiate optimizer
@@ -304,8 +304,9 @@ class MasterAgent():
         plt.show()
 
     def play(self, load_model=True, video_title=""):
-        self.load_model()
         model = self.global_model
+        if load_model:
+            self.load_model()
 
         env = gym.make(self.game_name)
         iii = 0
@@ -455,6 +456,8 @@ class Worker:
         self.action_size = Constants.ACTION_SIZE
         self.actions = Constants.ACTIONS
         self.local_model = ActorCriticModel(self.state_size, self.action_size)
+        # To initialize the layers we evaluate global network with a random input
+        self.local_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
         self.ep_loss = 0.0
         self.maxEpReward = 0.0
         self.global_episode = 0
