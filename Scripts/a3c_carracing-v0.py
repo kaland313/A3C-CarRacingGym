@@ -219,9 +219,12 @@ class ActorCriticModel(keras.Model):
     def call(self, inputs):
         # Forward pass
         x = self.conv1(inputs)
+        x = layers.BatchNormalization(x)
         x = self.conv2(x)
+        x = layers.BatchNormalization(x)
         x = self.flatten(x)
         x = self.dense1(x)
+        x = layers.BatchNormalization(x)
         logits = self.policy_logits(x)
         values = self.values(x)
         return logits, values
@@ -542,12 +545,12 @@ class Worker:
                 # Early termination
                 if ep_reward > self.maxEpReward:
                     self.maxEpReward = ep_reward
-                # if self.maxEpReward - ep_reward > 5:
-                #     done = True
-                #     early_terminated = True
+                if self.maxEpReward - ep_reward > 5:
+                    done = True
+                    early_terminated = True
 
-                # clip reward
-                reward = np.clip(reward, -1, 1)
+                # # clip reward
+                # reward = np.clip(reward, -1, 1)
 
                 mem.store(current_state, action, reward)
 
