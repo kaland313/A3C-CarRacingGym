@@ -210,21 +210,24 @@ class ActorCriticModel(keras.Model):
     def __init__(self, state_size, action_size):
         super(ActorCriticModel, self).__init__()
         self.conv1 = layers.Conv2D(16, 8, strides=4, activation='relu', data_format="channels_last")
+        self.batchnorm1 = layers.BatchNormalization()
         self.conv2 = layers.Conv2D(32, 3, strides=2, activation='relu', data_format="channels_last")
+        self.batchnorm2 = layers.BatchNormalization()
         self.flatten = layers.Flatten()
         self.dense1 = layers.Dense(Constants.DENSE_LAYER_INPUT_SIZE, activation='relu')
+        self.batchnorm3 = layers.BatchNormalization()
         self.policy_logits = layers.Dense(action_size)
         self.values = layers.Dense(1)
 
     def call(self, inputs):
         # Forward pass
         x = self.conv1(inputs)
-        x = layers.BatchNormalization(x)
+        x = self.batchnorm1(x)
         x = self.conv2(x)
-        x = layers.BatchNormalization(x)
+        x = self.batchnorm2(x)
         x = self.flatten(x)
         x = self.dense1(x)
-        x = layers.BatchNormalization(x)
+        x = self.batchnorm3(x)
         logits = self.policy_logits(x)
         values = self.values(x)
         return logits, values
@@ -653,8 +656,8 @@ class Worker:
         # # policy loss
         # policy_loss = - tf.reduce_sum(tf.reduce_sum(tf.multiply(log_pi, action), reduction_indices=1) * td
         #                               + entropy * Constants.ENTROPY_BETA)
-        print("Losses: T{:> 05.3} | P{:> 05.3} | V{:> 05.3} | E{:> 05.3}"
-              .format(float(total_loss), float(tf.reduce_mean(policy_loss)), float(tf.reduce_mean(0.5 * value_loss)), float(tf.reduce_mean(entropy))))
+        # print("Losses: T{:> 05.3} | P{:> 05.3} | V{:> 05.3} | E{:> 05.3}"
+        #       .format(float(total_loss), float(tf.reduce_mean(policy_loss)), float(tf.reduce_mean(0.5 * value_loss)), float(tf.reduce_mean(entropy))))
 
         return total_loss
 
