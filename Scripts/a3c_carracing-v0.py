@@ -57,7 +57,7 @@ parser.add_argument('--train', dest='train', action='store_true',
                     help='Train our model.')
 parser.add_argument('--lr', default=0.001,
                     help='Learning rate for the shared optimizer.')
-parser.add_argument('--max-eps', default=50000, type=int,
+parser.add_argument('--max-eps', default=5000, type=int,
                     help='Global maximum number of episodes to run.')
 parser.add_argument('--save-dir', default='../Outputs/', type=str,
                     help='Directory in which you desire to save the model.')
@@ -546,9 +546,9 @@ class Worker:
                 # Early termination
                 if ep_reward > self.maxEpReward:
                     self.maxEpReward = ep_reward
-                if self.maxEpReward - ep_reward > 5:
-                    done = True
-                    early_terminated = True
+                # if self.maxEpReward - ep_reward > 5:
+                #     done = True
+                #     early_terminated = True
 
                 # # clip reward
                 # reward = np.clip(reward, -1, 1)
@@ -631,7 +631,7 @@ class Worker:
         entropy = -tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
         policy_loss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=actions_one_hot, logits=logits)
         policy_loss *= tf.stop_gradient(advantage)
-        policy_loss -= 0.01 * entropy
+        policy_loss -= Constants.ENTROPY_BETA * entropy
         total_loss = tf.reduce_mean((0.5 * value_loss + policy_loss))
 
         # Calculate policy loss
@@ -685,7 +685,7 @@ class Worker:
     def play(self, load_model=True, video_title=""):
         model = self.local_model
         if load_model:
-            model_path = os.path.join(args.save_dir, 'model_manual_{}.h5'.format(self.game_name))
+            model_path = os.path.join(args.save_dir, 'model_{}.h5'.format(self.game_name))
             print('Loading model from: {}'.format(model_path))
             model.load_weights(model_path)
 

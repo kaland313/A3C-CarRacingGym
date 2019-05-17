@@ -76,7 +76,7 @@ CHECKPOINT_DIR  =  'checkpoints'
 ###################
 GRADIENT_NORM_CLIP  =  40.0      # Gradient clipping norm
 MAX_ITERATIONS      =  10 ** 6
-ENTROPY_BETA        =  0.01      # Entropy Regularization Constant
+ENTROPY_BETA        =  1e-4      # Entropy Regularization Constant
 DISCOUNT            =  0.99      # Discount
 
 
