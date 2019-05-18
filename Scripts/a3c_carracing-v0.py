@@ -55,32 +55,30 @@ parser.add_argument('--algorithm', default='a3c', type=str,
                     help='Choose between \'a3c\' and \'random\'.')
 parser.add_argument('--train', dest='train', action='store_true',
                     help='Train our model.')
-parser.add_argument('--lr', default=0.001,
+parser.add_argument('--load-model', dest='load_model', action='store_true',
+                    help='Load a trained model for further training.')
+parser.add_argument('--test', dest='test', action='store_true',
+                    help='Test the trained model loaded from the saves directory.'
+                         'Using multiple workers the model will be tested for 100 episodes. ')
+parser.add_argument('--save-dir', default='../Outputs/', type=str,
+                    help='Directory in which you desire to save the model.')
+parser.add_argument('--workers', default=4, type=int,
+                    help='Number of workers used for training, excluding the master managing the global model.')
+parser.add_argument('--lr', default=1e-4, type=float,
                     help='Learning rate for the shared optimizer.')
 parser.add_argument('--max-eps', default=5000, type=int,
                     help='Global maximum number of episodes to run.')
-parser.add_argument('--save-dir', default='../Outputs/', type=str,
-                    help='Directory in which you desire to save the model.')
-parser.add_argument('--load-model', dest='load_model', action='store_true',
-                    help='Load a trained model for further training.')
+parser.add_argument('--beta', default=1e-4, type=float,
+                    help='Entropy regularization coefficient beta.')
+parser.add_argument('--save-threshold', default=300.0, type=float,
+                    help='If a model is loaded, new one will overwrite it only if the achieved score is higher than this')
+
 args = parser.parse_args()
 
 
 #############################################################
 # Helper functions
 #############################################################
-# if rank == 1:
-if not os.path.exists(args.save_dir):
-    os.makedirs(args.save_dir)
-
-
-graph = tf.Graph()
-with graph.as_default():
-    global_step = tf.train.create_global_step()
-    summar_writer = tf.contrib.summary.create_file_writer(os.path.join(args.save_dir, 'summaries'), flush_millis=10000)
-    with summar_writer.as_default():
-        tf.contrib.summary.always_record_summaries()
-
 def record(episode, episode_reward, worker_idx, global_ep_reward, result_queue, total_loss, num_steps, global_steps,
            learning_rate, early_terminated, grad_norm, saved_value, csv_logger):
     """Helper function to store score and print statistics.
@@ -191,13 +189,6 @@ class RandomAgent:
                 steps += 1
                 reward_sum += reward
                 self.env.render()
-            # Record statistics
-            self.global_moving_average_reward = record(episode,
-                                                       reward_sum,
-                                                       0,
-                                                       self.global_moving_average_reward,
-                                                       self.res_queue, 0, steps)
-
             reward_avg += reward_sum
         final_avg = reward_avg / float(self.max_episodes)
         print("Average score across {} episodes: {}".format(self.max_episodes, final_avg))
@@ -279,7 +270,7 @@ class MasterAgent():
 
         # Instantiate optimizer
         # initial_learning_rate = log_uniform(Constants.ALPHA.LOW, Constants.ALPHA.HIGH, Constants.ALPHA.LOG_RATE)
-        self.initial_learning_rate = Constants.INITIAL_LEARNING_RATE
+        self.initial_learning_rate = args.lr
         self.opt = tf.train.RMSPropOptimizer(self.initial_learning_rate, use_locking=True, centered=False)
 
     def train(self):
@@ -295,17 +286,20 @@ class MasterAgent():
         # Load a trained model
         if args.load_model:
             self.load_model()
-            self.play(False, "LoadedModel")
+            # self.play(False, "LoadedModel")
 
-        m_send_packet = {'weights': self.global_model.get_weights()}
         # Broadcasting weights to workers
+        m_send_packet = {'weights': self.global_model.get_weights()}
         comm.bcast(m_send_packet, root=0)
 
+        # Receive packets from workers and update the weights
         while self.global_episode < args.max_eps:
             self.receive_and_update_weights()
 
         self.log_file.close()
 
+        plt.clf()
+        print("Moving average ep reward", self.moving_average_rewards)
         plt.plot(self.moving_average_rewards)
         plt.ylabel('Moving average ep reward')
         plt.xlabel('Step')
@@ -318,58 +312,54 @@ class MasterAgent():
             self.load_model()
 
         env = gym.make(self.game_name)
-        iii = 0
+        fig = plt.figure()
+        step_counter = 0
+        reward_sum = 0
+        max_reward = 0
+        ims = []
+        done = False
+        env_state = env.reset()
+        state = processAndStackFrames(env_state)
+        try:
+            while not done:
+                env.render()
+                logits, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
+                probs = tf.nn.softmax(logits)
+                action = np.argmax(probs)
+                game_commands = self.actions[action]
+                # Action softening based on action certainty
+                game_commands = np.max(probs) * np.array(game_commands)
+                new_frame, reward, done, _ = env.step(game_commands)
+                state = processAndStackFrames(new_frame, state)
+                # if step_counter > 80:
+                #     plt.imshow(rgb2gray(new_frame),cmap='gray')
+                #     plt.axis('off')
+                #     plt.show()
+                #     time.sleep(60)
+                reward_sum += reward
+                if max_reward < reward_sum:
+                    max_reward = reward_sum
+                discounted_reward_sum = reward + Constants.DISCOUNT * reward_sum
 
-        fig2 = plt.figure()
-        while iii < 1:
-            iii += 1
-            step_counter = 0
-            reward_sum = 0
-            max_reward = 0
-            ims = []
-            done = False
-            env_state = env.reset()
-            state = processAndStackFrames(env_state)
-            try:
-                while not done:
-                    env.render()
-                    logits, value = model(tf.convert_to_tensor(state[None, :], dtype=tf.float32))
-                    probs = tf.nn.softmax(logits)
-                    action = np.argmax(probs)
-                    game_commands = self.actions[action]
-                    # Action softening based on action certainty
-                    game_commands = np.max(probs) * np.array(game_commands)
-                    new_frame, reward, done, _ = env.step(game_commands)
-                    state = processAndStackFrames(new_frame, state)
-                    # if step_counter > 80:
-                    #     plt.imshow(rgb2gray(new_frame),cmap='gray')
-                    #     plt.axis('off')
-                    #     plt.show()
-                    #     time.sleep(60)
-                    reward_sum += reward
-                    if max_reward < reward_sum:
-                        max_reward = reward_sum
-                    discounted_reward_sum = np.clip(reward, -1, 1) + Constants.DISCOUNT * reward_sum
+                # Early termination
+                if max_reward - reward_sum > 15:
+                    done = True
 
-                    # Early termination
-                    if max_reward - reward_sum > 15:
-                        done = True
+                print("Step: {:>4} | Reward: {:>4.1f} | ActionProbabilites: {} | ActionIdx: {}({}) | Steer,Gas,Break: {} "
+                      .format(step_counter, reward_sum, np.array(probs)[0], action, Constants.ACTION_NAMES[action],
+                              game_commands))
+                ims.append([plt.imshow(new_frame, animated=True),
+                            plt.text(3, 3, "V(s)={:0.3f}, R={:0.3f}".format(value[0, 0], discounted_reward_sum)),
+                            plt.title(video_title)
+                            ])
+                step_counter += 1
+            print("Final Reward: ", reward_sum, "Max reward: ", max_reward)
+        except KeyboardInterrupt:
+            print("Received Keyboard Interrupt. Shutting down.")
 
-                    print("Step: {:>4} | Reward: {:>4.1f} | ActionProbabilites: {} | ActionIdx: {}({}) | Steer,Gas,Break: {} "
-                          .format(step_counter, reward_sum, np.array(probs)[0], action, Constants.ACTION_NAMES[action],
-                                  game_commands))
-                    ims.append([plt.imshow(new_frame, animated=True),
-                                plt.text(3, 3, "V(s)={:0.3f}, R={:0.3f}".format(value[0, 0], discounted_reward_sum)),
-                                plt.title(video_title)
-                                ])
-                    step_counter += 1
-                print("Final Reward: ", reward_sum, "Max reward: ", max_reward)
-            except KeyboardInterrupt:
-                print("Received Keyboard Interrupt. Shutting down.")
-
-            im_ani = animation.ArtistAnimation(fig2, ims, blit=True)
-            video_path = os.path.join(self.save_dir, '{}_{}.gif'.format(self.game_name, video_title))
-            im_ani.save(video_path, writer='pillow', fps=24)
+        im_ani = animation.ArtistAnimation(fig, ims, blit=True)
+        video_path = os.path.join(self.save_dir, '{}_{}.gif'.format(self.game_name, video_title))
+        im_ani.save(video_path, writer='pillow', fps=24)
 
         env.close()
 
@@ -404,11 +394,12 @@ class MasterAgent():
             print("Reloaded model, with best training score: ", self.best_training_score)
             self.log_writer.writerow(["Reloaded model, with best training score: " + str(self.best_training_score)])
 
+        # Send updated weights to the worker
         m_send_packet = {'weights': self.global_model.get_weights(),
                          'global_episode': self.global_episode + 1}
-
         comm.send(m_send_packet, dest=m_recv_packet['worker_rank'])
 
+        # Anneal learning rate
         self.opt._learning_rate = self._anneal_learning_rate(self.global_episode)
 
         if m_recv_packet['ep_done']:  # done and print information
@@ -430,11 +421,9 @@ class MasterAgent():
             self.moving_average_rewards.append(self.global_moving_average_reward)
 
             if self.global_moving_average_reward > self.best_training_score:
-                print("Saving best model to {}, moving awerage reward: {}".format(self.save_dir,
+                print("Saving best model to {}, moving average reward: {}".format(self.save_dir,
                                                                                   self.global_moving_average_reward))
-                self.global_model.save_weights(
-                    os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
-                )
+                self.global_model.save_weights(os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name)))
                 self.best_training_score = self.global_moving_average_reward
 
             if self.global_episode % 500 == 0:
@@ -442,16 +431,18 @@ class MasterAgent():
             self.global_episode += 1
 
     def save(self):
-        print("Saving best model to {}, moving awerage reward: {}".
+        print("Saving manual model to {}, moving awerage reward: {}".
               format(self.save_dir, self.global_moving_average_reward))
         self.global_model.save_weights(os.path.join(self.save_dir, 'model_manual_{}.h5'.format(self.game_name)))
 
     def load_model(self):
         model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.game_name))
         print('Loading model from: {}'.format(model_path))
-        self.global_model.load_weights(model_path, by_name=True)
+        self.global_model.load_weights(model_path)
         if int(self.best_training_score) == 0:
-            self.best_training_score = 475.0 #The latest best score
+            # If load model was caled after startup, this will execute
+            # Otherwise the best training score is either the value set here, or higher
+            self.best_training_score = args.save_threshold
 
     def _anneal_learning_rate(self, global_ep):
         return max(0, self.initial_learning_rate * (args.max_eps - global_ep) / args.max_eps)
@@ -489,7 +480,7 @@ class Worker:
         self.actions = Constants.ACTIONS
         self.local_model = ActorCriticModel(self.state_size, self.action_size)
         # To initialize the layers we evaluate global network with a random input
-        self.local_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
+        action, value = self.local_model(tf.convert_to_tensor(np.random.random(((1,) + self.state_size)), dtype=tf.float32))
         self.ep_loss = 0.0
         self.maxEpReward = 0.0
         self.global_episode = 0
@@ -505,12 +496,8 @@ class Worker:
         total_step = 1
         mem = Memory()
         while self.global_episode < args.max_eps:
-            # try:
             env_state = self.env.reset()  # Returns: observation (object): the initial observation of the env
             # self.env.render()
-            # except:
-            #     print("Exception while env.reset()")
-            #     env_state = np.random.random(self.state_size)
 
             current_state = processAndStackFrames(env_state)
             mem.clear()
@@ -539,7 +526,7 @@ class Worker:
 
                 new_state, reward, done, info = self.env.step(game_commands)
                 new_state = processAndStackFrames(new_state, current_state)
-                # self.env.render()
+                self.env.render()
 
                 ep_reward += reward
 
@@ -591,9 +578,6 @@ class Worker:
                     # Update local model with new weights
                     self.local_model.set_weights(new_weights)
 
-                    with tf.contrib.summary.record_summaries_every_n_global_steps(1):
-                        tf.contrib.summary.scalar('ep_loss', self.ep_loss)
-
                     mem.clear()
                     time_count = 0
 
@@ -631,68 +615,21 @@ class Worker:
         entropy = -tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
         policy_loss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=actions_one_hot, logits=logits)
         policy_loss *= tf.stop_gradient(advantage)
-        policy_loss -= Constants.ENTROPY_BETA * entropy
+        policy_loss -= args.beta * entropy
         total_loss = tf.reduce_mean((0.5 * value_loss + policy_loss))
-
-        # Calculate policy loss
-        # actions_one_hot = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
-        # log_prob_tf = tf.nn.log_softmax(logits)
-        # prob_tf = tf.nn.softmax(logits)
-        # pi_loss = - tf.reduce_sum(tf.reduce_sum(log_prob_tf * actions_one_hot, [1]) * advantage)
-        # value_loss = 0.5 * tf.reduce_sum(tf.square(values - discounted_rewards))
-        # entropy = - tf.reduce_sum(prob_tf * log_prob_tf)
-        # total_loss = pi_loss + 0.5 * value_loss - entropy * 0.01
-
-        # Calculate policy loss
-        # probs = tf.nn.softmax(logits)
-        # action = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
-        # # avoid NaN with clipping when value in pi becomes zero
-        # log_pi = tf.log(tf.clip_by_value(probs, 1e-20, 1.0))
-        # # policy entropy
-        # entropy = -tf.reduce_sum(probs * log_pi, reduction_indices=1)
-        # td = discounted_rewards - values
-        # # policy loss
-        # policy_loss = - tf.reduce_sum(tf.reduce_sum(tf.multiply(log_pi, action), reduction_indices=1) * td
-        #                               + entropy * Constants.ENTROPY_BETA)
-        # print("Losses: T{:> 05.3} | P{:> 05.3} | V{:> 05.3} | E{:> 05.3}"
-        #       .format(float(total_loss), float(tf.reduce_mean(policy_loss)), float(tf.reduce_mean(0.5 * value_loss)), float(tf.reduce_mean(entropy))))
 
         return total_loss
 
-        ##############################################################
-        # Not Tested, code snippet based on oguzelibol-CarRacingA3C
-        # probs = tf.nn.softmax(logits)
-        # action = np.argmax(probs)
-        #
-        # # avoid NaN with clipping when value in pi becomes zero
-        # log_pi = tf.log(tf.clip_by_value(probs, 1e-20, 1.0))
-        #
-        # # policy entropy
-        # entropy = -tf.reduce_sum(probs * log_pi, reduction_indices=1)
-        #
-        # td = discounted_rewards - values
-        # # policy loss (output)  (Adding minus, because the original paper's objective function is for gradient ascent, but we use gradient descent optimizer.)
-        # policy_loss = - tf.reduce_sum(tf.reduce_sum(tf.multiply(log_pi, action), reduction_indices=1)
-        #                               * td + entropy * Constants.ENTROPY_BETA)
-        #
-        # # value loss (output)
-        # # (Learning rate for Critic is half of Actor's, so multiply by 0.5)
-        # value_loss = 0.5 * tf.nn.l2_loss(discounted_rewards - values)
-        #
-        # # gradienet of policy and value are summed up
-        # return policy_loss + value_loss
-
-    def play(self, load_model=True, video_title=""):
+    def play(self):
         model = self.local_model
-        if load_model:
-            model_path = os.path.join(args.save_dir, 'model_{}.h5'.format(self.game_name))
-            print('Loading model from: {}'.format(model_path))
-            model.load_weights(model_path)
+        model_path = os.path.join(args.save_dir, 'model_{}.h5'.format(self.game_name))
+        print('Loading model from: {}'.format(model_path))
+        model.load_weights(model_path)
 
         env = gym.make(self.game_name)
         iii = 0
 
-        while iii < 100/Constants.NUM_THREADS+1:
+        while iii < 100/args.workers + 1:
             iii += 1
             step_counter = 0
             reward_sum = 0
@@ -741,7 +678,7 @@ def processAndStackFrames(new_frame, current_state=None):
     It contains the environment's state from the previous 4 steps.
     """
     gray_frame = rgb2gray(new_frame)
-    if (current_state is not None):
+    if current_state is not None:
         gray_frame = np.expand_dims(gray_frame, axis=2)
         new_state = np.append(current_state[:, :, 1:], gray_frame, axis=2)
     else:
@@ -753,34 +690,51 @@ def processAndStackFrames(new_frame, current_state=None):
 # The main
 #############################################################
 if __name__ == '__main__':
-    print(args)
+    if args.train and args.test:
+        parser.error('Train and test cannot be set at the same time. '
+                     'If you would like to run a test after training you have to do it manually.')
 
-    # randomAgent = RandomAgent('CarRacing-v0', 4000)
-    # randomAgent.run()
     if rank == 0:
-        print("Starting mpi processes")
-        mpi_fork(Constants.NUM_THREADS)
-
-        start_time = time.time()
-        master = MasterAgent()
-
+        print(args)
 
         # Install Ctrl+C signal handler
         def signal_handler(sig, frame):
             print('CTRL+C was pressed, attempting to stop and save.')
             master.save()
-
-
         signal.signal(signal.SIGINT, signal_handler)
-        if args.train:
+
+        if args.algorithm == 'random':
+            randomAgent = RandomAgent('CarRacing-v0', 1)
+            randomAgent.run()
+            exit()
+        elif args.train:
+            if not os.path.exists(args.save_dir):
+                os.makedirs(args.save_dir)
+            with open(os.path.join(args.save_dir, 'args.txt'), 'w') as f:
+                f.write(str(args))
+
+            print("=Training=====================================================")
+            print("Starting mpi processes")
+            mpi_fork(args.workers + 1)
+            master = MasterAgent()
+            start_time = time.time()
             master.train()
-        else:
+        elif args.test:
+            print("=Testing======================================================")
+            print("Starting mpi processes")
+            mpi_fork(args.workers + 1)
+            master = MasterAgent()
             master.play_multi_worker()
+        else:
+            print("=Demo=========================================================")
+            master = MasterAgent()
+            master.play()
+
     else:
         worker = Worker()
         if args.train:
             worker.run()
-        else:
+        elif args.test:
             worker.play()
-
+        # If the workers has nothing to do, they shouldn't do anything --> no default behaviour or else branch
 

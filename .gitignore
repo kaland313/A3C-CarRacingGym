@@ -102,3 +102,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+*.gif
+
+Outputs/CarRacing-v0 Moving Average\.png

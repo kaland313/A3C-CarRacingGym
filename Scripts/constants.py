@@ -20,13 +20,7 @@ ACTION_NAMES    =  ["Accel",
 ##################
 # General Config #
 ##################
-USE_GPU               =  False
 LOCAL_T_MAX           =  5         				# repeat step size
-NUM_THREADS           =  2         				# Number of parallel threads
-INITIAL_LEARNING_RATE =  1e-3
-SAVE_INTERVAL         =  120					# in seconds
-SAVE_FILENAME         = 'scores-saved.json'
-SAVE_SCORE_THRESHOLD  =  500
 
 
 #####################
@@ -64,19 +58,10 @@ class RMSP:
     EPSILON     =  0.1       # epsilon parameter for RMSProp
 
 
-########################
-# Log & save constants #
-########################
-LOG_FILE        =  'tmp/a3c_log'
-CHECKPOINT_DIR  =  'checkpoints'
-
-
 ###################
 # Other Constants #
 ###################
 GRADIENT_NORM_CLIP  =  40.0      # Gradient clipping norm
-MAX_ITERATIONS      =  10 ** 6
-ENTROPY_BETA        =  1e-4      # Entropy Regularization Constant
 DISCOUNT            =  0.99      # Discount
 
 
