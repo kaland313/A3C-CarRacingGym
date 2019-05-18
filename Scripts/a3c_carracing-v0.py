@@ -50,7 +50,8 @@ np.set_printoptions(sign=' ')
 # Command line argument parser
 #############################################################
 parser = argparse.ArgumentParser(description='Run A3C algorithm on the game '
-                                             'CarRacing-v0.')
+                                             'CarRacing-v0.',
+                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--algorithm', default='a3c', type=str,
                     help='Choose between \'a3c\' and \'random\'.')
 parser.add_argument('--train', dest='train', action='store_true',
@@ -357,6 +358,7 @@ class MasterAgent():
         except KeyboardInterrupt:
             print("Received Keyboard Interrupt. Shutting down.")
 
+        print("Saving gif file, please wait!")
         im_ani = animation.ArtistAnimation(fig, ims, blit=True)
         video_path = os.path.join(self.save_dir, '{}_{}.gif'.format(self.game_name, video_title))
         im_ani.save(video_path, writer='pillow', fps=24)

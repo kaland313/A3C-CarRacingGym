@@ -38,9 +38,37 @@ In order to run train the model enter the following commands to the bash shell o
 
 `cd /tf/Scripts`
 
-`xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py --train --max-eps=20000` 
+`xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py --train --max-eps=5000` 
 
-# Running the trained model
+The script can be executed with the following command-line arguments (the default values might change without changing this readme, they can be checked by running the scipt with the `--help` flag): 
+
+```
+  -h, --help            show this help message and exit
+  --algorithm ALGORITHM
+                        Choose between 'a3c' and 'random'. (default: a3c)
+  --train               Train our model. (default: False)
+  --load-model          Load a trained model for further training. (default:
+                        False)
+  --test                Test the trained model loaded from the saves
+                        directory.Using multiple workers the model will be
+                        tested for 100 episodes. (default: False)
+  --save-dir SAVE_DIR   Directory in which you desire to save the model.
+                        (default: ../Outputs/)
+  --workers WORKERS     Number of workers used for training, excluding the
+                        master managing the global model. (default: 4)
+  --lr LR               Learning rate for the shared optimizer. (default:
+                        0.0001)
+  --max-eps MAX_EPS     Global maximum number of episodes to run. (default:
+                        5000)
+  --beta BETA           Entropy regularization coefficient beta. (default:
+                        0.0001)
+  --save-threshold SAVE_THRESHOLD
+                        If a model is loaded, new one will overwrite it only
+                        if the achieved score is higher than this (default:
+                        300.0)
+```
+
+# Demonstarting the model's behaviour (single worker testing)
 A trained model is included in this repository at: [Outputs/model_CarRacing-v0.h5](https://github.com/kaland313/A3C-CarRacingGym/blob/master/Outputs/model_CarRacing-v0.h5). 
 
 The docker container doesn't have a graphical output at the moment, thus only command line output is given, when running a model: 
@@ -49,11 +77,16 @@ The docker container doesn't have a graphical output at the moment, thus only co
 
 `xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py`
 
-This will load a model from `Outputs/model_CarRacing-v0.h5` and run it for one episode (no eraly termination).
+This will load a model from `Outputs/model_CarRacing-v0.h5`, run it for one episode (with eraly termination) and a gif file showing the states encountered during the episode will be saved to the outputs folder.
 
 Outside the docker container with an apropriately set up python environment the graphical output of the gym can be viewed by running:
 
 `python a3c_carracing-v0.py`
+
+# Test/evaluate the model
+To evaluate the model the average episode reward over 100 episodes and its standard deviation is calculated. The evaluaion is carried out on multiple workers by running: 
+
+`xvfb-run -a -s "-screen 0 640x480x24" python a3c_carracing-v0.py --test`
 
 # Other code scripts for reference
 ## Code from oguzelibol/CarRacingA3C
