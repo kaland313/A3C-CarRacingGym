@@ -68,6 +68,7 @@ The script can be executed with the following command-line arguments (the defaul
                         300.0)
 ```
 
+The command line arguments are saved to a file called `args.txt` if a training is started. 
 # Demonstarting the model's behaviour (single worker testing)
 A trained model is included in this repository at: [Outputs/model_CarRacing-v0.h5](https://github.com/kaland313/A3C-CarRacingGym/blob/master/Outputs/model_CarRacing-v0.h5). 
 
