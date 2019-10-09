@@ -1,5 +1,8 @@
 # A3C-CarRacingGym
 A3C deep reinforcement learning algoritm applied to the CarRacing-v0 gym running in a docker container
+
+![Demo-gif](A3C-CarRacing.gif)
+
 # Prerequisites 
 * Docker installation (no gpu needed)
 # Setting up the docker image
